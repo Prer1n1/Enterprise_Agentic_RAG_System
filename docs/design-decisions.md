@@ -132,3 +132,29 @@ There are 5 levels of RAG maturity:
 - **Verified live**, not just assumed from the docs: once the key was added, `client.list_runs(project_name="enterprise-agentic-rag")` showed real traces for an actual query — the full LangGraph execution (`route_to_sources` → `retrieve_node` → `synthesize_node` → `ChatOpenAI`) captured automatically, confirming the config-only claim actually holds.
 
 ---
+
+## API Layer (FastAPI)
+
+**Three endpoints, not a REST wrapper around every internal function**
+- `GET /health`, `POST /ingest`, `POST /query` — the actual product surface. `evaluate` deliberately stayed CLI-only: RAGAS evaluation is a batch/ops operation (multiple real LLM calls, ~10-15s+), not something that belongs on the live request path.
+- Request/response contract lives in `api/schemas.py`, separate from the internal dataclasses (`Chunk`, `RetrievedChunk`) — an internal refactor shouldn't silently change the public API shape.
+
+**Sync route handlers, not async**
+- The whole pipeline (LangGraph, embeddings, OpenAI calls) is synchronous. FastAPI runs sync `def` handlers in a thread pool automatically, so this gets non-blocking behavior for free — rewriting the entire stack as `async`/`await` would be a much bigger change for no real benefit at current request volume.
+
+**Retriever built once at startup, not per-request**
+- `HybridRetriever.__init__` loads every chunk from `ChunkStore` into memory to build the BM25 index — cheap once, wasteful if rebuilt on every request. `AppState` is constructed once in FastAPI's `lifespan`, held on `app.state`, and reused.
+- **Real bug this surfaces if you don't handle it**: after `/ingest` adds or removes chunks, the BM25 index built at startup is a stale in-memory snapshot — new content becomes invisible to keyword search even though it's correctly persisted in both stores. Fixed by calling `rebuild_retriever()` after any ingestion that actually changed something (`ingested_files` or `deleted_files` non-empty) — cheap at this corpus size, and correctness matters more than optimizing away a rebuild that only happens on actual data changes.
+- `threading.Lock` (not `asyncio.Lock`) guards state mutation during `/ingest`, since sync handlers run in real OS threads via FastAPI's thread pool, not as coroutines — the correct primitive follows from the sync-handler decision above, not an arbitrary choice.
+
+**`/health` actually checks both stores, not a static `{"status": "ok"}`**
+- Runs a real `chunk_store.get_all()` count and a real `vector_store.similarity_search()` — a broken DB file or an unreachable Chroma directory shows up here instead of surfacing as a confusing 500 on the first real query. A health check that can't fail isn't checking anything.
+
+**Verified with real HTTP requests, not just "it starts without erroring"**
+- `GET /health` → 200, correctly reported 12 reachable chunks.
+- `POST /query` (real question) → 200, correct grounded answer with accurate citations (password rotation question correctly routed to and cited the IT-tagged CSV row).
+- `POST /query` (empty question) → 422, Pydantic's own validation (`min_length=1`), not custom code.
+- `POST /ingest` (nonexistent directory) → 400 with a clear message.
+- `POST /ingest` (valid, nothing changed) → 200, correctly reported `skipped_unchanged: 4`.
+
+---
