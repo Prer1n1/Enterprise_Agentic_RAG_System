@@ -129,5 +129,6 @@ There are 5 levels of RAG maturity:
 **LangSmith tracing — config only, zero code changes elsewhere**
 - Setting `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT` as environment variables is the entire integration — LangChain/LangGraph auto-instrument every LLM call once they're present. No changes needed to `agent/`, `retrieval/`, or anywhere else.
 - Wired to degrade silently: if `LANGSMITH_API_KEY` is unset, tracing is simply off, nothing breaks. Requires a free account at smith.langchain.com — external signup, not something that can be scripted.
+- **Verified live**, not just assumed from the docs: once the key was added, `client.list_runs(project_name="enterprise-agentic-rag")` showed real traces for an actual query — the full LangGraph execution (`route_to_sources` → `retrieve_node` → `synthesize_node` → `ChatOpenAI`) captured automatically, confirming the config-only claim actually holds.
 
 ---
