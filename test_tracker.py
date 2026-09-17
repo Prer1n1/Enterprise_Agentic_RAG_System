@@ -5,6 +5,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from ingestion.schema import canonical_source
 from ingestion.tracker import IngestionTracker
 
 tmp_dir = Path(tempfile.mkdtemp())
@@ -46,7 +47,7 @@ print("\n=== find_deleted: simulate b.txt removed from the corpus listing ===")
 tracker.mark_ingested(file_a)  # re-mark the edited file as ingested
 deleted = tracker.find_deleted([file_a])  # only file_a is "still present"
 print(f"deleted: {deleted}")
-assert str(file_b) in deleted
+assert canonical_source(file_b) in deleted
 print("PASS: b.txt correctly detected as removed from the corpus")
 
 shutil.rmtree(tmp_dir)

@@ -14,7 +14,7 @@ from typing import List, Union
 
 import pandas as pd
 
-from ..schema import Document, DocumentMetadata
+from ..schema import Document, DocumentMetadata, canonical_source
 from .base import BaseLoader
 
 # If a CSV has one of these columns, its value is ground truth for category
@@ -44,7 +44,7 @@ class CSVLoader(BaseLoader):
                 Document(
                     content=content,
                     metadata=DocumentMetadata(
-                        source=str(file_path),
+                        source=canonical_source(file_path),
                         doc_type=self.doc_type,
                         title=file_path.stem,
                         section=f"Row {row_index + 1}",

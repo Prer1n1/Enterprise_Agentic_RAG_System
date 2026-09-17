@@ -12,6 +12,7 @@ from typing import List, Union
 from .chunking import Chunk, chunk_documents
 from .loaders import load_document
 from .metadata_extractor import enrich_all
+from .schema import canonical_source
 from .tracker import IngestionTracker
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".html", ".htm", ".csv"}
@@ -42,7 +43,7 @@ def ingest_directory(
     for file_path in all_files:
         decision = tracker.check(file_path)
         if not decision.should_ingest:
-            result.skipped_unchanged.append(str(file_path))
+            result.skipped_unchanged.append(canonical_source(file_path))
             continue
 
         docs_to_chunk.extend(enrich_all(load_document(file_path)))
@@ -56,6 +57,10 @@ def ingest_directory(
     # reports these files as needing ingestion on the next run.
     for file_path in files_pending_mark:
         tracker.mark_ingested(file_path)
-        result.ingested_files.append(str(file_path))
+        # MUST match the canonical_source() used in Document.metadata.source
+        # (set by the loaders) — main.py/api.py call delete_by_source() on
+        # these entries before persisting new chunks, and that only finds
+        # the right rows if the identity string matches exactly.
+        result.ingested_files.append(canonical_source(file_path))
 
     return result

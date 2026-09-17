@@ -1,0 +1,19 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    # Secrets injected at RUN time from .env, never baked into the image
+    # itself (the image is built once and could be reused across
+    # environments — dev/staging/prod shouldn't share one baked-in key).
+    env_file:
+      - .env
+    # Bind mount, not a named Docker volume: this project is for learning
+    # and local inspection, so the tradeoff favors being able to just open
+    # ./storage in Windows Explorer and see the actual Chroma/SQLite files.
+    # A named volume would be the more portable choice for a real
+    # multi-environment deployment (Docker manages its location, not tied
+    # to a host path).
+    volumes:
+      - ./storage:/app/storage
+      - ./sample_data:/app/sample_data

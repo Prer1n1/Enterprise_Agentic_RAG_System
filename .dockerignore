@@ -1,0 +1,22 @@
+# Never bake secrets into an image — they'd be extractable from it forever,
+# even from old layers, even after being "removed" in a later layer.
+.env
+
+.git
+.gitignore
+__pycache__/
+*.pyc
+.venv/
+
+# Persistent data and source documents — live in a mounted volume at
+# runtime (docker-compose.yml), not baked into the image. Real document
+# sources shouldn't be frozen into an image anyway; they get mounted in.
+storage/chroma_db/
+storage/chunk_store.db
+storage/ingestion_manifest.db
+sample_data/
+
+# Dev-only: docs and manual test scripts aren't part of what's actually served.
+docs/
+test_*.py
+README.md

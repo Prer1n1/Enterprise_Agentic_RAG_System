@@ -12,7 +12,7 @@ from typing import List, Union
 
 from pypdf import PdfReader
 
-from ..schema import Document, DocumentMetadata
+from ..schema import Document, DocumentMetadata, canonical_source
 from .base import BaseLoader
 
 
@@ -37,7 +37,7 @@ class PDFLoader(BaseLoader):
                 Document(
                     content=text,
                     metadata=DocumentMetadata(
-                        source=str(file_path),
+                        source=canonical_source(file_path),
                         doc_type=self.doc_type,
                         title=title,
                         author=author,

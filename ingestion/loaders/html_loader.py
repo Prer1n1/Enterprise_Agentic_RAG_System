@@ -9,7 +9,7 @@ from typing import List, Union
 
 from bs4 import BeautifulSoup
 
-from ..schema import Document, DocumentMetadata
+from ..schema import Document, DocumentMetadata, canonical_source
 from .base import BaseLoader
 
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
@@ -41,7 +41,7 @@ class HTMLLoader(BaseLoader):
                     Document(
                         content=text,
                         metadata=DocumentMetadata(
-                            source=str(file_path),
+                            source=canonical_source(file_path),
                             doc_type=self.doc_type,
                             title=title,
                             section=current_section,
@@ -77,7 +77,7 @@ class HTMLLoader(BaseLoader):
                         Document(
                             content=table_content,
                             metadata=DocumentMetadata(
-                                source=str(file_path),
+                                source=canonical_source(file_path),
                                 doc_type=self.doc_type,
                                 title=title,
                                 section=current_section,

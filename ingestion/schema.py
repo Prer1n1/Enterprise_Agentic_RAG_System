@@ -10,7 +10,27 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Optional, Union
+
+
+def canonical_source(file_path: Union[str, Path]) -> str:
+    """The identity string used for a source file EVERYWHERE it matters
+    for correctness: metadata.source, the incremental tracker's keys, and
+    chunk_id derivation. Always forward-slash (POSIX), regardless of OS.
+
+    Why this exists: verified bug — ingesting the same file from Windows
+    (str(Path) -> "sample_data\\x.csv") and from inside a Linux Docker
+    container (str(Path) -> "sample_data/x.csv") produced two different
+    identity strings for the identical file. The incremental tracker
+    treated the container run as "4 new files" AND "4 deleted files"
+    simultaneously, silently defeating the whole point of incremental
+    ingestion across the exact environments this project is meant to run
+    in (a Windows dev machine building an image that runs on Linux).
+    Only used for IDENTITY strings — actually opening a file still uses
+    the native str(file_path), which must stay OS-correct.
+    """
+    return Path(file_path).as_posix()
 
 
 @dataclass

@@ -158,3 +158,33 @@ There are 5 levels of RAG maturity:
 - `POST /ingest` (valid, nothing changed) → 200, correctly reported `skipped_unchanged: 4`.
 
 ---
+
+## Docker
+
+**Status: verified.** `docker compose up --build` was run for real — full image build (Python 3.11-slim + ~20 packages, chromadb pulling in onnxruntime/grpcio/opentelemetry), container started, `HEALTHCHECK` reported `healthy`, and `/health`, `/query`, `/ingest` were all hit against the actual running container with real answers and correct citations. A rebuild after a code-only change (no `requirements.txt` change) completed in ~1 second — confirmed the dependency-layer caching strategy works as designed, not just in theory.
+
+**Real bug found BY running in Docker specifically — not something any earlier test could have caught**
+- What happened: ingesting `sample_data` from the Windows host, then hitting `/ingest` again from inside the Linux container (both pointed at the same mounted `./storage` folder) reported `"ingested_files": 4, "deleted_files": 4"` — every file simultaneously "new" AND "deleted." All 4 files' chunks got needlessly re-embedded.
+- Root cause: `DocumentMetadata.source` and the incremental tracker's manifest keys were built from `str(file_path)` — Windows renders this with backslashes (`sample_data\handbook.html`), Linux with forward slashes (`sample_data/handbook.html`). Same logical file, two different identity strings, depending on which OS did the ingesting. The tracker's "is this already ingested?" check is a string comparison, so it silently failed across the OS boundary.
+- Why this is a genuinely important bug for THIS project specifically, not an edge case: the entire point of Dockerizing an app built on Windows is to run it on Linux somewhere else (a cloud VM, a Kubernetes node). A cross-platform identity bug isn't a corner case here — it's exactly the seam Docker is designed to cross, so it was always going to get hit the moment Docker actually ran.
+- Fix: added `canonical_source()` (`ingestion/schema.py`) — `Path(file_path).as_posix()`, always forward-slash regardless of OS — and used it everywhere a file's identity is constructed: all four loaders' `source=` field, both tracker methods, `find_deleted()`, and the ingestion pipeline's `ingested_files`/`skipped_unchanged` lists (these must match the loaders' output exactly, or `delete_by_source()` calls silently target the wrong key and do nothing). Deliberately kept the *native* `str(file_path)` for actually opening files (`PdfReader(str(file_path))`, `docx.Document(str(file_path))`) — only identity strings needed normalizing, not filesystem calls.
+- Verified the fix directly: wiped storage, re-ingested from the Windows host, confirmed stored paths were already POSIX-style (`sample_data/handbook.html`) even on Windows, then hit `/ingest` from the container against that same data — `skipped_unchanged: 4, ingested_files: 0, deleted_files: 0`. Re-ran the full test suite (`test_pipeline.py`, `test_tracker.py`, `test_storage.py`, `test_agent.py`) afterward; one test (`test_tracker.py`) needed updating because it was itself asserting against the old OS-native path format — the implementation was right, the test's expectation was stale.
+
+**Consolidated the SQLite tracker's location before writing any Docker config**
+- `ingestion_manifest.db` lived at the project root while `chunk_store.db` and `chroma_db/` lived under `storage/` — three persistence artifacts, two locations. Moved the tracker to `storage/ingestion_manifest.db` so ONE volume mount (`./storage:/app/storage`) covers all of it.
+- Why this matters specifically for Docker: mounting a single file as a bind mount is a well-known footgun — if the file doesn't exist yet on the host, Docker silently creates a *directory* with that name instead of a file, and the app then fails in a confusing way trying to open a directory as a SQLite database. Consolidating into one folder sidesteps the problem entirely rather than working around it.
+
+**Dependency layer before source code layer (Dockerfile instruction order)**
+- `COPY requirements.txt .` + `pip install` happens BEFORE `COPY . .`. Docker caches each instruction as a layer; changing application code invalidates only the layers after it. If the source code copy came first, every code change would force reinstalling ~20 packages (langchain, chromadb, ragas, etc.) from scratch on every rebuild.
+
+**Secrets and data never baked into the image**
+- `.env` is in `.dockerignore` — an image is a static artifact that could be pushed to a registry or reused across environments; a key baked into one layer stays extractable from the image forever, even if a later layer appears to remove it.
+- `storage/` (the three persistence artifacts) and `sample_data/` (source documents) are both excluded from the image build and mounted as volumes in `docker-compose.yml` instead. Real document sources and real persisted data shouldn't be frozen into a container image — they get mounted in at runtime, same as a real deployment would need to update/replace them without rebuilding the whole image.
+
+**Bind mount, not a named Docker volume**
+- `./storage:/app/storage` maps directly to a host folder, so the actual Chroma/SQLite files can be opened directly in Windows Explorer — chosen deliberately for a learning project where being able to inspect the real files matters. A named Docker volume (Docker manages the storage location itself) would be the more portable choice for a real multi-environment deployment, at the cost of not being directly browsable from the host.
+
+**`HEALTHCHECK` reuses the real `/health` endpoint, not a fake liveness ping**
+- Lets `docker ps` and any orchestrator (docker-compose, Kubernetes) know whether the container is actually serving correctly — not just that the process hasn't crashed. Consistent with the same "a health check that can't fail isn't checking anything" reasoning from the FastAPI section.
+
+---

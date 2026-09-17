@@ -17,7 +17,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Union
 
-DEFAULT_DB_PATH = Path(__file__).parent.parent / "ingestion_manifest.db"
+from .schema import canonical_source
+
+DEFAULT_DB_PATH = Path(__file__).parent.parent / "storage" / "ingestion_manifest.db"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS ingested_files (
@@ -58,7 +60,7 @@ class IngestionTracker:
     def check(self, file_path: Union[str, Path]) -> IngestDecision:
         """Decide whether a file needs (re)ingestion. Read-only — does
         not mutate the manifest."""
-        file_path_str = str(file_path)
+        file_path_str = canonical_source(file_path)
         current_hash = file_hash(file_path)
         with closing(self._connect()) as conn:
             row = conn.execute(
@@ -76,7 +78,7 @@ class IngestionTracker:
         """Call ONLY after a file has been successfully chunked and
         embedded. Marking earlier would hide a failed ingestion as
         'already done' on the next run — the manifest would lie."""
-        file_path_str = str(file_path)
+        file_path_str = canonical_source(file_path)
         current_hash = file_hash(file_path)
         now = datetime.now(timezone.utc).isoformat()
         with closing(self._connect()) as conn:
@@ -94,7 +96,7 @@ class IngestionTracker:
         """Files the manifest still tracks that are no longer in the
         current corpus listing — callers use this to purge their chunks
         from the vector store on the next ingestion run."""
-        current_set = {str(p) for p in current_file_paths}
+        current_set = {canonical_source(p) for p in current_file_paths}
         with closing(self._connect()) as conn:
             tracked = {row[0] for row in conn.execute("SELECT file_path FROM ingested_files")}
         return sorted(tracked - current_set)
