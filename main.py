@@ -100,6 +100,20 @@ def cmd_chat(args: argparse.Namespace) -> None:
         _print_answer(result)
 
 
+def cmd_evaluate(args: argparse.Namespace) -> None:
+    _require_api_key()
+    from evaluation.ragas_eval import print_report, run_evaluation
+
+    embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL)
+    chunk_store = ChunkStore()
+    vector_store = get_vector_store(embeddings=embeddings)
+    retriever = HybridRetriever(vector_store, chunk_store)
+
+    print("Running evaluation (RAGAS: faithfulness, relevancy, context precision)...")
+    results = run_evaluation(retriever)
+    print_report(results)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Enterprise Agentic RAG Platform")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -114,6 +128,9 @@ def main() -> None:
 
     chat_parser = subparsers.add_parser("chat", help="Interactive Q&A loop")
     chat_parser.set_defaults(func=cmd_chat)
+
+    evaluate_parser = subparsers.add_parser("evaluate", help="Run RAGAS evaluation over the curated eval set")
+    evaluate_parser.set_defaults(func=cmd_evaluate)
 
     args = parser.parse_args()
     args.func(args)

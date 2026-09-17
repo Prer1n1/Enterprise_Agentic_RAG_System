@@ -18,6 +18,9 @@ Documents (PDF/DOCX/HTML/CSV)
    [Retrieval]  hybrid: dense (Chroma) + sparse (BM25) fused with Reciprocal Rank Fusion
         |
    [Agent]      LangGraph: plan (route to sources) -> parallel retrieve per source -> synthesize (grounded + cited)
+        |
+   [Evaluation] RAGAS: faithfulness (= hallucination detection), answer relevancy, context precision
+                LangSmith tracing (auto-instruments every LLM call, config-only)
 ```
 
 This project is classified as **Agentic RAG**: an agent decides which knowledge sources to query rather than always searching everything. See the design log for where it sits relative to Naive/Advanced/Modular/Adaptive-Self-Reflective RAG.
@@ -27,6 +30,8 @@ This project is classified as **Agentic RAG**: an agent decides which knowledge 
 ```bash
 pip install -r requirements.txt
 cp .env.example .env   # then add your real OPENAI_API_KEY
+                        # LANGSMITH_API_KEY is optional (free key at smith.langchain.com) —
+                        # tracing turns on automatically once it's set, nothing else to configure
 ```
 
 ## Running it
@@ -40,6 +45,9 @@ python main.py ask "How many paid leave days do employees get?"
 
 # Interactive chat loop
 python main.py chat
+
+# Run RAGAS evaluation over the curated eval set (faithfulness, relevancy, context precision)
+python main.py evaluate
 ```
 
 Re-running `ingest` is incremental — unchanged files are skipped (content-hash based), and only new/changed files are re-processed.
@@ -51,7 +59,8 @@ ingestion/    loaders (PDF/DOCX/HTML/CSV) -> common Document schema -> metadata 
 storage/      Chroma vector store + SQLite chunk store
 retrieval/    BM25 + hybrid retriever (Reciprocal Rank Fusion)
 agent/        LangGraph state, router/planner, nodes, graph
-main.py       CLI: ingest / ask / chat
+evaluation/   curated eval set + RAGAS scoring (faithfulness/relevancy/context precision)
+main.py       CLI: ingest / ask / chat / evaluate
 docs/         design-decisions.md — the full reasoning log
 ```
 
@@ -72,5 +81,7 @@ python test_agent.py
 
 ## Status
 
-Built so far: Ingestion & Processing, Storage, Retrieval, Agent Orchestration (LangGraph).
-Not yet built: Evaluation & Observability (LangSmith tracing, RAGAS, hallucination detection), FastAPI REST layer, Docker packaging.
+Built so far: Ingestion & Processing, Storage, Retrieval, Agent Orchestration (LangGraph), Evaluation & Observability (RAGAS, hallucination detection, LangSmith tracing).
+Not yet built: FastAPI REST layer, Docker packaging, authentication, structured logging/CI.
+
+This is a tested prototype demonstrating the full Agentic RAG architecture end-to-end — not a hardened production deployment. See the "Evaluation & Observability" and earlier sections of [docs/design-decisions.md](docs/design-decisions.md) for what's still missing before it would be.

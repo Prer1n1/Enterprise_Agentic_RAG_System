@@ -107,3 +107,27 @@ There are 5 levels of RAG maturity:
 - Advantage of skipping it: core platform (ingest → retrieve → agent → answer) stays achievable and demoable.
 
 ---
+
+## Evaluation & Observability
+
+**RAGAS — real dependency conflict found, root-caused, and fixed (not swapped for a substitute)**
+- What happened: `pip install ragas` pulled the latest release (`0.4.3`), but importing it failed immediately — `ragas/llms/base.py` does an unconditional top-level `from langchain_community.chat_models.vertexai import ChatVertexAI`, and that submodule has been deleted from current `langchain-community` (`0.4.2`) as part of its ongoing deprecation/reorganization. This breaks `ragas` for every user regardless of which LLM provider they actually use, not just Google Vertex AI users — confirmed via multiple open GitHub issues on the ragas repo, not a problem specific to this project's setup.
+- First instinct (a web search summary) said "pin `ragas==0.3.9`, it works" — **that turned out to be false when actually tested**: 0.3.9 hits the exact same broken import, because the failure depends on the installed `langchain-community` version, not the `ragas` version. Lesson: verify claims by running the code, don't trust a search summary at face value — including this session's own first attempt.
+- Root cause, verified directly: the `chat_models.vertexai` submodule still exists in `langchain-community==0.4.1` but not `0.4.2`. Downgrading just that one package (not `ragas`, not `langchain-core`/`langchain-openai`/`langgraph`) fixed the import cleanly.
+- Verified the fix doesn't destabilize anything: `pip install langchain-community==0.4.1` didn't touch `langchain-core`, `langchain-openai`, or `langgraph` at all (all already satisfied 0.4.1's requirements), and the full agent test suite (`test_agent.py`) was re-run afterward and still passed — router decisions and grounded citations unchanged.
+- Why this was worth the effort instead of hand-rolling: the user's stated goal was to actually use RAGAS (it's the named tool in the original scope), and the real fix turned out to be a one-line, low-risk, verifiable version pin — not the risky wholesale downgrade or dependency-isolation approach originally feared before actually testing it.
+
+**RAGAS API — verified by testing, not by trusting deprecation warnings**
+- The library itself is mid-transition between two internal APIs. `llm_factory`/`embedding_factory` are what its own deprecation warnings recommend — tested directly, and both throw `AttributeError('InstructorLLM' object has no attribute 'agenerate_prompt')` when paired with the `Faithfulness`/`ResponseRelevancy` metric classes in this installed version.
+- `LangchainLLMWrapper`/`LangchainEmbeddingsWrapper` — flagged deprecated by the library — are what actually works with these metrics. Verified with a live call, including a deliberately fabricated answer to confirm the metric genuinely discriminates: a faithful answer scored `1.0`, a fabricated one ("45 days and a free car" instead of the real "20 days") scored `0.0`. Lesson: when a library's own deprecation guidance conflicts with what actually runs, trust the test, not the warning text — the library's internal migration isn't finished yet.
+
+**Hallucination detection = RAGAS Faithfulness below a threshold, not a separate mechanism**
+- Faithfulness already measures "is the answer grounded in the retrieved context" — that IS what a hallucination is. Building a second, separate hallucination-detection pipeline would just be re-deriving the same signal with extra steps.
+- `HALLUCINATION_THRESHOLD = 0.7`: below this, an answer is flagged `likely_hallucination`. Chosen to tolerate minor phrasing looseness while catching answers where a meaningful fraction of claims aren't grounded.
+- All 5 real eval-set questions scored faithfulness `1.00` — genuinely well-grounded, not a metric that can't fail (proven separately by the fabricated-answer test above).
+
+**LangSmith tracing — config only, zero code changes elsewhere**
+- Setting `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT` as environment variables is the entire integration — LangChain/LangGraph auto-instrument every LLM call once they're present. No changes needed to `agent/`, `retrieval/`, or anywhere else.
+- Wired to degrade silently: if `LANGSMITH_API_KEY` is unset, tracing is simply off, nothing breaks. Requires a free account at smith.langchain.com — external signup, not something that can be scripted.
+
+---
