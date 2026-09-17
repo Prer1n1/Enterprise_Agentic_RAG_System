@@ -7,3 +7,4 @@ __pycache__/
 storage/chroma_db/
 storage/chunk_store.db
 storage/ingestion_manifest.db
+uploads/

@@ -12,11 +12,12 @@ Run with: uvicorn api.app:app --reload
 
 from __future__ import annotations
 
+import shutil
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from langchain_openai import OpenAIEmbeddings
 
 from agent.graph import build_agent_graph
@@ -29,10 +30,12 @@ from api.schemas import (
     QueryResponse,
 )
 from config import EMBEDDING_MODEL, OPENAI_API_KEY
-from ingestion.pipeline import ingest_directory
+from ingestion.pipeline import SUPPORTED_EXTENSIONS, IngestionResult, ingest_directory
 from retrieval.hybrid_retriever import HybridRetriever
 from storage.chunk_store import ChunkStore
 from storage.vector_store import add_chunks, delete_by_source, get_vector_store
+
+UPLOAD_DIR = Path("uploads")
 
 
 class AppState:
@@ -102,12 +105,11 @@ def health() -> HealthResponse:
     )
 
 
-@app.post("/ingest", response_model=IngestResponse)
-def ingest(request: IngestRequest) -> IngestResponse:
-    directory = Path(request.directory)
-    if not directory.exists():
-        raise HTTPException(status_code=400, detail=f"Directory not found: {directory}")
-
+def _ingest_and_persist(directory: Path) -> IngestionResult:
+    """Shared by /ingest and /documents/upload — both end in 'ingest this
+    directory and persist the result,' so the delete-then-insert
+    correctness logic lives in exactly one place instead of two copies
+    that could drift apart."""
     with _state_lock:
         state: AppState = app.state.rag
         result = ingest_directory(directory, embeddings=state.embeddings)
@@ -130,12 +132,52 @@ def ingest(request: IngestRequest) -> IngestResponse:
         if result.ingested_files or result.deleted_files:
             state.rebuild_retriever()
 
+    return result
+
+
+def _to_ingest_response(result: IngestionResult) -> IngestResponse:
     return IngestResponse(
         ingested_files=len(result.ingested_files),
         skipped_unchanged=len(result.skipped_unchanged),
         deleted_files=len(result.deleted_files),
         chunks_stored=len(result.chunks),
     )
+
+
+@app.post("/ingest", response_model=IngestResponse)
+def ingest(request: IngestRequest) -> IngestResponse:
+    directory = Path(request.directory)
+    if not directory.exists():
+        raise HTTPException(status_code=400, detail=f"Directory not found: {directory}")
+
+    result = _ingest_and_persist(directory)
+    return _to_ingest_response(result)
+
+
+@app.post("/documents/upload", response_model=IngestResponse)
+def upload_document(file: UploadFile = File(...)) -> IngestResponse:
+    """Lets a document get into the platform over HTTP, instead of
+    requiring filesystem/SSH access to wherever the app happens to be
+    running — the same reason a real deployment can't rely on /ingest's
+    directory-path approach alone."""
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{suffix}'. Supported: {sorted(SUPPORTED_EXTENSIONS)}",
+        )
+
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    dest = UPLOAD_DIR / file.filename
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    # Re-ingesting the whole uploads/ directory, not just the new file, is
+    # deliberate: it reuses the SAME incremental-tracker path as directory
+    # ingestion (unchanged files there are still skipped via content hash),
+    # so there's exactly one ingestion code path to trust, not two.
+    result = _ingest_and_persist(UPLOAD_DIR)
+    return _to_ingest_response(result)
 
 
 @app.post("/query", response_model=QueryResponse)

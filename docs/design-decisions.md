@@ -188,3 +188,24 @@ There are 5 levels of RAG maturity:
 - Lets `docker ps` and any orchestrator (docker-compose, Kubernetes) know whether the container is actually serving correctly — not just that the process hasn't crashed. Consistent with the same "a health check that can't fail isn't checking anything" reasoning from the FastAPI section.
 
 ---
+
+## Source Connectivity (production-readiness pass on Ingestion)
+
+**Fixed: non-recursive directory traversal**
+- `ingest_directory()` used `directory.iterdir()`, which only lists a folder's immediate children. Real document corpora are organized into subfolders (`documents/HR/`, `documents/Finance/`, ...) — everything nested was silently skipped, no error. Fixed with `directory.rglob("*")`. Verified with a real nested file before/after.
+
+**`POST /documents/upload` — lets documents in over HTTP**
+- Why: `/ingest`'s directory-path approach requires filesystem/SSH access to wherever the app runs — not realistic for most users of a real deployment. Upload accepts a file, validates its extension against `SUPPORTED_EXTENSIONS`, saves to `uploads/`, then re-ingests that whole directory through the exact same incremental-tracker path as `/ingest` — one ingestion code path to trust, not two.
+- Refactored `/ingest` and `/documents/upload` to share one `_ingest_and_persist()` helper rather than duplicating the delete-then-insert persistence logic in two places that could drift apart.
+
+**SEVERE bug found and fixed: multi-root ingestion silently deleted unrelated data**
+- What happened, concretely: uploaded one new file via `/documents/upload` (which ingests `uploads/`). The response reported `deleted_files: 4` and the chunk count dropped from 12 to 1 — all 4 `sample_data/` files' chunks were wrongly purged from both stores.
+- Root cause: `IngestionTracker.find_deleted()` compared *every file the tracker has ever tracked* against the current listing, with no concept of which corpus root that listing belonged to. The moment `/ingest` (root: `sample_data/`) and `/documents/upload` (root: `uploads/`) started sharing one tracker, ingesting either root alone made every file in the *other* root look deleted, since it obviously wasn't in the current listing either.
+- This was live, active data loss during testing, not a theoretical edge case — caught immediately because every claim in this project gets tested with real requests, not just reasoned about.
+- Fix: `find_deleted()` now takes an optional `root` and scopes the "tracked" set to only paths under that root before diffing. `ingest_directory()` passes its own `directory` as that root. Recovered the deleted demo data with a clean re-ingest (the tracker's manifest rows for those files weren't touched by the bug, only their chunk_store/vector_store entries — but since the manifest still thought them "unchanged," a normal re-ingest wouldn't have regenerated them either, so a full storage wipe + fresh ingest was the correct recovery, not a partial one).
+- Added a permanent regression test (`test_pipeline.py`) — two separate roots sharing one tracker, ingest one, assert the other's file is never reported as deleted. This exact scenario must never silently regress again.
+
+**Google Drive connector — in progress, requires the user's own Google Cloud setup**
+- Deliberately not building SharePoint/Confluence/S3/etc. as well — the connector "shape" (authenticate, list, fetch, detect changes) is the same for all of them; building one for real and documenting the pattern is worth more than five built on unverifiable assumptions. Other named source-connector types are common; other formats are deferred with reasoning until a real account is available to test against — same discipline as the GraphRAG decision earlier.
+
+---

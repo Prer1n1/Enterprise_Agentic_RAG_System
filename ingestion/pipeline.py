@@ -34,8 +34,17 @@ def ingest_directory(
     directory = Path(directory)
     tracker = tracker or IngestionTracker()
 
-    all_files = [p for p in directory.iterdir() if p.suffix.lower() in SUPPORTED_EXTENSIONS]
-    result = IngestionResult(deleted_files=tracker.find_deleted(all_files))
+    # rglob, not iterdir: real document corpora are organized into
+    # subfolders (documents/HR/, documents/Finance/, ...) — iterdir() only
+    # lists a folder's immediate children and silently misses everything
+    # nested deeper, with no error to indicate anything was skipped.
+    all_files = [p for p in directory.rglob("*") if p.suffix.lower() in SUPPORTED_EXTENSIONS]
+    # root=directory scopes deletion-detection to just this corpus root —
+    # required now that /ingest and /documents/upload can point at
+    # different directories (sample_data/, uploads/, ...) sharing one
+    # tracker. Without it, ingesting one root wrongly looks like every
+    # file in every OTHER root was deleted.
+    result = IngestionResult(deleted_files=tracker.find_deleted(all_files, root=directory))
 
     docs_to_chunk = []
     files_pending_mark = []

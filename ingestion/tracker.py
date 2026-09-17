@@ -92,13 +92,28 @@ class IngestionTracker:
             )
             conn.commit()
 
-    def find_deleted(self, current_file_paths: List[Union[str, Path]]) -> List[str]:
-        """Files the manifest still tracks that are no longer in the
-        current corpus listing — callers use this to purge their chunks
-        from the vector store on the next ingestion run."""
+    def find_deleted(
+        self,
+        current_file_paths: List[Union[str, Path]],
+        root: Union[str, Path, None] = None,
+    ) -> List[str]:
+        """Files the manifest still tracks (under `root`, if given) that
+        are no longer in the current corpus listing — callers use this to
+        purge their chunks from the vector store on the next ingestion run.
+
+        `root` scopes the comparison to one corpus root. Without it, this
+        is a global comparison across EVERY file ever tracked — which
+        breaks the moment more than one ingestion root shares a tracker
+        (verified bug: ingesting uploads/ alone made every sample_data/
+        file look "deleted" simply because it wasn't in the uploads/
+        listing, and their chunks were wrongly purged from both stores).
+        """
         current_set = {canonical_source(p) for p in current_file_paths}
         with closing(self._connect()) as conn:
             tracked = {row[0] for row in conn.execute("SELECT file_path FROM ingested_files")}
+        if root is not None:
+            root_prefix = canonical_source(root).rstrip("/") + "/"
+            tracked = {t for t in tracked if t.startswith(root_prefix)}
         return sorted(tracked - current_set)
 
     def filter_needs_ingestion(self, file_paths: List[Union[str, Path]]) -> List[IngestDecision]:

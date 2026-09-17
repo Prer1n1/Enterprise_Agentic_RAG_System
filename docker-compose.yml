@@ -17,3 +17,4 @@ services:
     volumes:
       - ./storage:/app/storage
       - ./sample_data:/app/sample_data
+      - ./uploads:/app/uploads
