@@ -385,5 +385,6 @@ There are 5 levels of RAG maturity:
 - A real query about the new hire's onboarding ("What are the onboarding requirements for...") answered correctly using the surviving non-PII content, with no PII in the answer or citations.
 - Structured logs confirmed the audit trail: `pii_redacted` with `types: ["SSN", "SALARY", "EMAIL", "PHONE_NUMBER"], count: 4`.
 - `test_pii_redaction.py` covers the offline mechanics via a fake structured-output LLM double (redaction, no-op on clean text, fail-closed on a simulated failure, and the full `ingest_directory()` integration proving chunked content never contains the raw PII), plus a gated Part 2 with a real LLM call on realistic synthetic PII.
+- **Verified in CI on GitHub's real runners too**: pushing this feature triggered [workflow run 35404002540](https://github.com/Prer1n1/Enterprise_Agentic_RAG_System/actions) — both `free-tests` (including `test_pii_redaction.py`'s offline mechanics) and `live-tests` passed.
 
 ---
