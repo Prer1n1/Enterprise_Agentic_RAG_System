@@ -41,6 +41,7 @@ from config import (
 from ingestion.pipeline import SUPPORTED_EXTENSIONS, IngestionResult, ingest_directory
 from ingestion.tracker import IngestionTracker
 from logging_config import configure_logging
+from prompt_injection import detect_injection
 from retrieval.hybrid_retriever import HybridRetriever
 from storage.chunk_store import ChunkStore
 from storage.vector_store import add_chunks, delete_by_source, get_vector_store
@@ -180,8 +181,11 @@ def _ingest_and_persist(directory: Path) -> IngestionResult:
             "skipped_unchanged": len(result.skipped_unchanged),
             "deleted_files": len(result.deleted_files),
             "chunks_stored": len(result.chunks),
+            "blocked_files": len(result.blocked_files),
         },
     )
+    if result.blocked_files:
+        logger.warning("ingestion_blocked_files", extra={"blocked_files": result.blocked_files})
     return result
 
 
@@ -191,6 +195,7 @@ def _to_ingest_response(result: IngestionResult) -> IngestResponse:
         skipped_unchanged=len(result.skipped_unchanged),
         deleted_files=len(result.deleted_files),
         chunks_stored=len(result.chunks),
+        blocked_files=result.blocked_files,
     )
 
 
@@ -221,7 +226,13 @@ def upload_document(file: UploadFile = File(...)) -> IngestResponse:
     dest = UPLOAD_DIR / file.filename
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
-    logger.info("document_uploaded", extra={"filename": file.filename})
+    # NOT "filename" — that key collides with a reserved attribute on
+    # Python's own LogRecord (stdlib logging raises KeyError: "Attempt to
+    # overwrite 'filename' in LogRecord" if you try). Found by actually
+    # exercising this endpoint after adding structured logging, not by
+    # inspection — a real bug the earlier logging pass introduced and
+    # never triggered until this code path was hit live.
+    logger.info("document_uploaded", extra={"uploaded_filename": file.filename})
 
     # Re-ingesting the whole uploads/ directory, not just the new file, is
     # deliberate: it reuses the SAME incremental-tracker path as directory
@@ -262,6 +273,15 @@ def query(request: QueryRequest) -> QueryResponse:
     # scannable without truncating anything that actually matters for
     # debugging (the routed categories + citation sources below cover that).
     logger.info("query_received", extra={"question_preview": request.question[:80]})
+
+    # Direct prompt injection check — a user could try to jailbreak the
+    # agent straight through the question text, not just via a malicious
+    # ingested document (indirect injection, checked at ingestion time
+    # instead). Rejected before it ever reaches the agent graph — fail
+    # closed, same policy as ingestion. See prompt_injection.py.
+    if detect_injection(request.question):
+        logger.warning("query_blocked_injection", extra={"question_preview": request.question[:80]})
+        raise HTTPException(status_code=400, detail="Query rejected: looks like a prompt injection attempt")
 
     try:
         result = graph.invoke({"query": request.question})

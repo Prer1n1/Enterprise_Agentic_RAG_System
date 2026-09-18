@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Union
 
+from prompt_injection import detect_injection
+
 from .chunking import Chunk, chunk_documents
 from .loaders import load_document
 from .metadata_extractor import enrich_all
@@ -28,6 +30,10 @@ class IngestionResult:
     # hash it), NOT yet marked in the tracker — see the note on
     # ingest_directory() below for why marking is the CALLER's job now.
     pending_mark: List[Path] = field(default_factory=list)
+    # Files whose content was flagged as a prompt injection attempt — fail
+    # closed: never chunked, never persisted, never marked ingested. See
+    # docs/design-decisions.md ("Prompt Injection Defense").
+    blocked_files: List[str] = field(default_factory=list)
 
 
 def ingest_directory(
@@ -36,6 +42,8 @@ def ingest_directory(
     embeddings=None,
     classifier_llm=None,
     use_llm_classifier: bool = True,
+    injection_llm=None,
+    use_llm_injection_detector: bool = True,
 ) -> IngestionResult:
     directory = Path(directory)
     tracker = tracker or IngestionTracker()
@@ -61,8 +69,23 @@ def ingest_directory(
             result.skipped_unchanged.append(canonical_source(file_path))
             continue
 
+        documents = load_document(file_path)
+
+        # Checked BEFORE enrichment/chunking, at file granularity: if ANY
+        # page/section/row in this file looks like an injection attempt,
+        # the WHOLE file is blocked — fail closed. Not marked in the
+        # tracker (not "ingested" at all), so it's re-checked on every
+        # future run rather than silently marked done. See
+        # docs/design-decisions.md ("Prompt Injection Defense").
+        if any(
+            detect_injection(doc.content, llm=injection_llm, use_llm=use_llm_injection_detector)
+            for doc in documents
+        ):
+            result.blocked_files.append(canonical_source(file_path))
+            continue
+
         docs_to_chunk.extend(
-            enrich_all(load_document(file_path), llm=classifier_llm, use_llm=use_llm_classifier)
+            enrich_all(documents, llm=classifier_llm, use_llm=use_llm_classifier)
         )
         files_pending_mark.append(file_path)
 

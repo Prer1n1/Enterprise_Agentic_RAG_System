@@ -35,6 +35,10 @@ class IngestResponse(BaseModel):
     skipped_unchanged: int
     deleted_files: int
     chunks_stored: int
+    blocked_files: List[str] = Field(
+        default_factory=list,
+        description="Files whose content was flagged as a suspected prompt injection attempt and blocked from ingestion.",
+    )
 
 
 class HealthResponse(BaseModel):

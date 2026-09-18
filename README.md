@@ -13,7 +13,8 @@ See [docs/design-decisions.md](docs/design-decisions.md) for the reasoning behin
 ```
 Documents (PDF/DOCX/HTML/CSV)
         |
-   [Ingestion]  loaders -> metadata extraction -> hierarchical chunking -> incremental tracker
+   [Ingestion]  loaders -> injection check (blocks flagged files) -> metadata extraction
+                -> hierarchical chunking -> incremental tracker
         |
    [Storage]    Chroma (vectors + metadata filtering)  +  SQLite (chunk text, source of truth)
         |
@@ -26,6 +27,7 @@ Documents (PDF/DOCX/HTML/CSV)
                 LangSmith tracing (auto-instruments every LLM call, config-only)
         |
    [API]        FastAPI: GET /health, POST /ingest, POST /documents/upload, POST /ingest/drive, POST /query
+                (/query rejects prompt injection attempts with 400 before reaching the agent)
 ```
 
 This project is classified as **Agentic RAG**: an agent decides which knowledge sources to query rather than always searching everything. See the design log for where it sits relative to Naive/Advanced/Modular/Adaptive-Self-Reflective RAG.
@@ -111,7 +113,7 @@ docs/         design-decisions.md — the full reasoning log
 
 ## Testing
 
-Each component has a standalone `test_*.py` script at the project root (no pytest framework yet — these are direct sanity checks with assertions, runnable individually). The first 7 use fake embeddings / the keyword classifier fallback / monkeypatching and need no API key; the last 2 make real OpenAI calls:
+Each component has a standalone `test_*.py` script at the project root (no pytest framework yet — these are direct sanity checks with assertions, runnable individually). The first 8 use fake embeddings / the keyword classifier fallback / monkeypatching and need no API key; the last 2 make real OpenAI calls:
 
 ```bash
 # free / offline — no API key needed
@@ -121,7 +123,8 @@ python test_chunking.py
 python test_tracker.py
 python test_pipeline.py
 python test_storage.py
-python test_reranker.py   # also gains a real Cohere call if COHERE_API_KEY is set
+python test_reranker.py            # also gains a real Cohere call if COHERE_API_KEY is set
+python test_prompt_injection.py    # also gains real LLM detector calls if OPENAI_API_KEY is set
 
 # live — real OpenAI calls, needs OPENAI_API_KEY in .env
 python test_retrieval.py
@@ -132,6 +135,6 @@ CI (`.github/workflows/tests.yml`) runs the free suite on every push and PR auto
 
 ## Status
 
-Built so far: Ingestion & Processing, Storage, Retrieval (hybrid + Cohere reranking), Agent Orchestration (LangGraph), Evaluation & Observability (RAGAS, hallucination detection, LangSmith tracing), API Layer (FastAPI) with API-key authentication and structured JSON logging, Reliability (retry logic for transient OpenAI/Cohere failures, a fixed data-integrity bug in the ingestion tracker), Docker packaging, CI (GitHub Actions).
+Built so far: Ingestion & Processing (with prompt injection detection — malicious documents are blocked, fail closed), Storage, Retrieval (hybrid + Cohere reranking), Agent Orchestration (LangGraph), Evaluation & Observability (RAGAS, hallucination detection, LangSmith tracing), API Layer (FastAPI) with API-key authentication, structured JSON logging, and query-level prompt injection defense, Reliability (retry logic for transient OpenAI/Cohere failures, a fixed data-integrity bug in the ingestion tracker), Docker packaging, CI (GitHub Actions).
 
 This is a tested prototype demonstrating the full Agentic RAG architecture end-to-end — not a hardened production deployment. See [docs/design-decisions.md](docs/design-decisions.md) for the reasoning behind every choice and what's still out of scope.

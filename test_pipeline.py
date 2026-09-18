@@ -42,7 +42,7 @@ tracker = IngestionTracker(db_path=db_path)
 fake_embeddings = HashFakeEmbeddings()
 
 print("=== Run 1: first ingestion, all files are new ===")
-result1 = ingest_directory(SAMPLE_DIR, tracker=tracker, embeddings=fake_embeddings, use_llm_classifier=False)
+result1 = ingest_directory(SAMPLE_DIR, tracker=tracker, embeddings=fake_embeddings, use_llm_classifier=False, use_llm_injection_detector=False)
 print(f"ingested_files: {len(result1.ingested_files)}")
 print(f"skipped_unchanged: {len(result1.skipped_unchanged)}")
 print(f"chunks produced: {len(result1.chunks)}")
@@ -57,7 +57,7 @@ for file_path in result1.pending_mark:
     tracker.mark_ingested(file_path)
 
 print("\n=== Run 2: same files, nothing changed ===")
-result2 = ingest_directory(SAMPLE_DIR, tracker=tracker, embeddings=fake_embeddings, use_llm_classifier=False)
+result2 = ingest_directory(SAMPLE_DIR, tracker=tracker, embeddings=fake_embeddings, use_llm_classifier=False, use_llm_injection_detector=False)
 print(f"ingested_files: {len(result2.ingested_files)}")
 print(f"skipped_unchanged: {len(result2.skipped_unchanged)}")
 print(f"chunks produced: {len(result2.chunks)}")
@@ -76,14 +76,14 @@ root_b.mkdir()
 (root_b / "b.csv").write_text("policy_id,department,rule\nP-2,IT,Some IT rule\n")
 
 shared_tracker = IngestionTracker(db_path=tmp_dir / "shared_manifest.db")
-result_a = ingest_directory(root_a, tracker=shared_tracker, embeddings=fake_embeddings, use_llm_classifier=False)
+result_a = ingest_directory(root_a, tracker=shared_tracker, embeddings=fake_embeddings, use_llm_classifier=False, use_llm_injection_detector=False)
 print(f"ingest root_a: ingested={len(result_a.ingested_files)} deleted={len(result_a.deleted_files)}")
 assert len(result_a.ingested_files) == 1
 assert len(result_a.deleted_files) == 0
 for file_path in result_a.pending_mark:
     shared_tracker.mark_ingested(file_path)
 
-result_b = ingest_directory(root_b, tracker=shared_tracker, embeddings=fake_embeddings, use_llm_classifier=False)
+result_b = ingest_directory(root_b, tracker=shared_tracker, embeddings=fake_embeddings, use_llm_classifier=False, use_llm_injection_detector=False)
 print(f"ingest root_b: ingested={len(result_b.ingested_files)} deleted={len(result_b.deleted_files)}")
 assert len(result_b.ingested_files) == 1
 assert len(result_b.deleted_files) == 0, "root_a's file must NOT be reported as deleted just because it's absent from root_b's listing"
@@ -103,7 +103,7 @@ crash_dir.mkdir()
 (crash_dir / "c.csv").write_text("policy_id,department,rule\nP-3,Finance,Some Finance rule\n")
 crash_tracker = IngestionTracker(db_path=tmp_dir / "crash_manifest.db")
 
-result_c = ingest_directory(crash_dir, tracker=crash_tracker, embeddings=fake_embeddings, use_llm_classifier=False)
+result_c = ingest_directory(crash_dir, tracker=crash_tracker, embeddings=fake_embeddings, use_llm_classifier=False, use_llm_injection_detector=False)
 assert len(result_c.pending_mark) == 1
 # Simulate persistence FAILING here (e.g. a crash between chunking and
 # save_chunks()/add_chunks()) — deliberately do NOT call mark_ingested().

@@ -75,6 +75,10 @@ def _print_ingest_result(result: IngestionResult) -> None:
     print(f"Skipped (unchanged):    {len(result.skipped_unchanged)} file(s)")
     print(f"Purged (deleted):       {len(result.deleted_files)} file(s)")
     print(f"Chunks stored:          {len(result.chunks)}")
+    if result.blocked_files:
+        print(f"BLOCKED (suspected prompt injection): {len(result.blocked_files)} file(s)")
+        for source in result.blocked_files:
+            print(f"  - {source}")
 
 
 def cmd_ingest(args: argparse.Namespace) -> None:
