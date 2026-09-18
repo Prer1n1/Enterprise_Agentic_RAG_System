@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Dict, List
 
 from retrieval.bm25_retriever import BM25Retriever
+from retrieval.reranker import rerank
 from storage.chunk_store import ChunkStore
 from storage.vector_store import similarity_search
 
@@ -57,11 +58,16 @@ class HybridRetriever:
         top_k: int = 5,
         fetch_k: int = 20,
         category: str = None,
+        use_reranker: bool = True,
     ) -> List[RetrievedChunk]:
         """category=None searches the whole corpus; otherwise restricts
         both retrievers to one knowledge source — this is what lets the
         agent query a specific source instead of always searching
-        everything."""
+        everything.
+
+        use_reranker=False skips the Cohere call entirely (used by tests
+        that need to stay free/offline/deterministic, mirroring the
+        use_llm escape hatch on the ingestion side)."""
         dense_filter = {"category": category} if category else None
         dense_docs = similarity_search(self.vector_store, query, k=fetch_k, filter=dense_filter)
         dense_ranking = [d.metadata["chunk_id"] for d in dense_docs if d.metadata.get("chunk_id")]
@@ -70,14 +76,17 @@ class HybridRetriever:
         sparse_ranking = [chunk_id for chunk_id, _ in sparse_results]
 
         fused = reciprocal_rank_fusion([dense_ranking, sparse_ranking])
-        top_ids = sorted(fused, key=fused.get, reverse=True)[:top_k]
+        # Keep the WIDER fetch_k candidate pool here, not top_k — reranking
+        # needs a real pool of candidates to re-order. Narrowing to top_k
+        # before reranking would leave nothing for it to actually improve.
+        candidate_ids = sorted(fused, key=fused.get, reverse=True)[:fetch_k]
 
-        results = []
-        for chunk_id in top_ids:
+        candidates = []
+        for chunk_id in candidate_ids:
             row = self._rows_by_id.get(chunk_id)
             if row is None:
                 continue
-            results.append(
+            candidates.append(
                 RetrievedChunk(
                     chunk_id=chunk_id,
                     content=row["content"],
@@ -88,4 +97,20 @@ class HybridRetriever:
                     score=fused[chunk_id],
                 )
             )
-        return results
+
+        if use_reranker and candidates:
+            reranked = rerank(query, [c.content for c in candidates], top_n=top_k)
+            if reranked is not None:
+                results = []
+                for index, relevance_score in reranked:
+                    chunk = candidates[index]
+                    # .score now reflects the signal that actually produced
+                    # this ordering (Cohere relevance), not the stale RRF
+                    # score from before reranking reshuffled the list.
+                    chunk.score = relevance_score
+                    results.append(chunk)
+                return results
+
+        # No reranker configured, or it failed: fall back to the RRF
+        # ordering, already sorted best-first — just truncate.
+        return candidates[:top_k]

@@ -20,10 +20,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # These 6 scripts use fake embeddings / the keyword classifier
-      # fallback (use_llm=False) instead of real OpenAI calls — see each
-      # file's own docstring. No API key needed, so they run unconditionally
-      # on every push and PR, including from forks.
+      # These 7 scripts use fake embeddings / the keyword classifier
+      # fallback (use_llm=False) instead of real OpenAI calls, and
+      # test_reranker.py exercises its own no-COHERE_API_KEY fallback plus
+      # a monkeypatched fake reranker — see each file's own docstring. No
+      # API key needed, so they run unconditionally on every push and PR,
+      # including from forks.
       - name: Run offline test suite
         run: |
           python test_loaders.py
@@ -32,6 +34,7 @@ jobs:
           python test_tracker.py
           python test_pipeline.py
           python test_storage.py
+          python test_reranker.py
 
   live-tests:
     name: Live tests (real OpenAI calls)

@@ -18,6 +18,7 @@ Documents (PDF/DOCX/HTML/CSV)
    [Storage]    Chroma (vectors + metadata filtering)  +  SQLite (chunk text, source of truth)
         |
    [Retrieval]  hybrid: dense (Chroma) + sparse (BM25) fused with Reciprocal Rank Fusion
+                -> reranked by Cohere Rerank for precision (optional, falls back to RRF order)
         |
    [Agent]      LangGraph: plan (route to sources) -> parallel retrieve per source -> synthesize (grounded + cited)
         |
@@ -37,6 +38,9 @@ cp .env.example .env   # then add your real OPENAI_API_KEY, and set API_KEY to a
                         #   python -c "import secrets; print(secrets.token_urlsafe(32))"
                         # LANGSMITH_API_KEY is optional (free key at smith.langchain.com) —
                         # tracing turns on automatically once it's set, nothing else to configure
+                        # COHERE_API_KEY is optional (free trial key at dashboard.cohere.com) —
+                        # reranking turns on automatically once it's set; retrieval falls back
+                        # to plain RRF order without it
 ```
 
 ## Running it
@@ -107,7 +111,7 @@ docs/         design-decisions.md — the full reasoning log
 
 ## Testing
 
-Each component has a standalone `test_*.py` script at the project root (no pytest framework yet — these are direct sanity checks with assertions, runnable individually). The first 6 use fake embeddings / the keyword classifier fallback and need no API key; the last 2 make real OpenAI calls:
+Each component has a standalone `test_*.py` script at the project root (no pytest framework yet — these are direct sanity checks with assertions, runnable individually). The first 7 use fake embeddings / the keyword classifier fallback / monkeypatching and need no API key; the last 2 make real OpenAI calls:
 
 ```bash
 # free / offline — no API key needed
@@ -117,6 +121,7 @@ python test_chunking.py
 python test_tracker.py
 python test_pipeline.py
 python test_storage.py
+python test_reranker.py   # also gains a real Cohere call if COHERE_API_KEY is set
 
 # live — real OpenAI calls, needs OPENAI_API_KEY in .env
 python test_retrieval.py
@@ -127,6 +132,6 @@ CI (`.github/workflows/tests.yml`) runs the free suite on every push and PR auto
 
 ## Status
 
-Built so far: Ingestion & Processing, Storage, Retrieval, Agent Orchestration (LangGraph), Evaluation & Observability (RAGAS, hallucination detection, LangSmith tracing), API Layer (FastAPI) with API-key authentication and structured JSON logging, Reliability (retry logic for transient OpenAI failures, a fixed data-integrity bug in the ingestion tracker), Docker packaging, CI (GitHub Actions).
+Built so far: Ingestion & Processing, Storage, Retrieval (hybrid + Cohere reranking), Agent Orchestration (LangGraph), Evaluation & Observability (RAGAS, hallucination detection, LangSmith tracing), API Layer (FastAPI) with API-key authentication and structured JSON logging, Reliability (retry logic for transient OpenAI/Cohere failures, a fixed data-integrity bug in the ingestion tracker), Docker packaging, CI (GitHub Actions).
 
 This is a tested prototype demonstrating the full Agentic RAG architecture end-to-end — not a hardened production deployment. See [docs/design-decisions.md](docs/design-decisions.md) for the reasoning behind every choice and what's still out of scope.

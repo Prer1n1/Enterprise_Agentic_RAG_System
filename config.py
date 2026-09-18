@@ -34,3 +34,8 @@ if LANGSMITH_API_KEY:
 # pattern as LangSmith above.
 GOOGLE_DRIVE_CREDENTIALS_PATH = os.getenv("GOOGLE_DRIVE_CREDENTIALS_PATH")
 GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+
+# Cohere Rerank — reranks retrieval candidates for precision (see
+# retrieval/reranker.py). Unset means retrieval silently falls back to
+# plain RRF ordering, same degrade-silently pattern as LangSmith/Drive.
+COHERE_API_KEY = os.getenv("COHERE_API_KEY")
