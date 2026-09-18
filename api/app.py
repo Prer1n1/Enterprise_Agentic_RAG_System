@@ -21,6 +21,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from langchain_openai import OpenAIEmbeddings
 
+from access_control import ALL_CATEGORIES, KeyScope
 from agent.graph import build_agent_graph
 from api.schemas import (
     Citation,
@@ -199,8 +200,19 @@ def _to_ingest_response(result: IngestionResult) -> IngestResponse:
     )
 
 
-@app.post("/ingest", response_model=IngestResponse, dependencies=[Depends(require_api_key)])
-def ingest(request: IngestRequest) -> IngestResponse:
+def _require_ingest_permission(scope: KeyScope) -> None:
+    """Access control: ingestion is an admin-only action regardless of
+    which categories a key can QUERY — a key scoped to read HR documents
+    shouldn't be able to write/replace the corpus just because it holds a
+    valid key. Separate from category filtering (see /query below), which
+    controls read access, not write access."""
+    if not scope.can_ingest:
+        raise HTTPException(status_code=403, detail=f"API key role '{scope.role}' does not have ingestion access")
+
+
+@app.post("/ingest", response_model=IngestResponse)
+def ingest(request: IngestRequest, scope: KeyScope = Depends(require_api_key)) -> IngestResponse:
+    _require_ingest_permission(scope)
     directory = Path(request.directory)
     if not directory.exists():
         raise HTTPException(status_code=400, detail=f"Directory not found: {directory}")
@@ -209,12 +221,13 @@ def ingest(request: IngestRequest) -> IngestResponse:
     return _to_ingest_response(result)
 
 
-@app.post("/documents/upload", response_model=IngestResponse, dependencies=[Depends(require_api_key)])
-def upload_document(file: UploadFile = File(...)) -> IngestResponse:
+@app.post("/documents/upload", response_model=IngestResponse)
+def upload_document(file: UploadFile = File(...), scope: KeyScope = Depends(require_api_key)) -> IngestResponse:
     """Lets a document get into the platform over HTTP, instead of
     requiring filesystem/SSH access to wherever the app happens to be
     running — the same reason a real deployment can't rely on /ingest's
     directory-path approach alone."""
+    _require_ingest_permission(scope)
     suffix = Path(file.filename).suffix.lower()
     if suffix not in SUPPORTED_EXTENSIONS:
         raise HTTPException(
@@ -242,12 +255,13 @@ def upload_document(file: UploadFile = File(...)) -> IngestResponse:
     return _to_ingest_response(result)
 
 
-@app.post("/ingest/drive", response_model=IngestResponse, dependencies=[Depends(require_api_key)])
-def ingest_drive() -> IngestResponse:
+@app.post("/ingest/drive", response_model=IngestResponse)
+def ingest_drive(scope: KeyScope = Depends(require_api_key)) -> IngestResponse:
     """Syncs the configured Google Drive folder into a local cache, then
     reuses the identical ingest_directory() path as everything else —
     the connector's only job is making Drive content look like local
     files (see ingestion/connectors/google_drive.py)."""
+    _require_ingest_permission(scope)
     if not GOOGLE_DRIVE_CREDENTIALS_PATH or not GOOGLE_DRIVE_FOLDER_ID:
         raise HTTPException(
             status_code=400,
@@ -264,15 +278,15 @@ def ingest_drive() -> IngestResponse:
     return _to_ingest_response(result)
 
 
-@app.post("/query", response_model=QueryResponse, dependencies=[Depends(require_api_key)])
-def query(request: QueryRequest) -> QueryResponse:
+@app.post("/query", response_model=QueryResponse)
+def query(request: QueryRequest, scope: KeyScope = Depends(require_api_key)) -> QueryResponse:
     with _state_lock:
         graph = app.state.rag.graph  # brief hold just to read a consistent reference
 
     # question_preview, not the full question: keeps log lines short and
     # scannable without truncating anything that actually matters for
     # debugging (the routed categories + citation sources below cover that).
-    logger.info("query_received", extra={"question_preview": request.question[:80]})
+    logger.info("query_received", extra={"question_preview": request.question[:80], "role": scope.role})
 
     # Direct prompt injection check — a user could try to jailbreak the
     # agent straight through the question text, not just via a malicious
@@ -283,8 +297,14 @@ def query(request: QueryRequest) -> QueryResponse:
         logger.warning("query_blocked_injection", extra={"question_preview": request.question[:80]})
         raise HTTPException(status_code=400, detail="Query rejected: looks like a prompt injection attempt")
 
+    # Access control: None means unrestricted (the admin key) — the router
+    # inside plan_node still decides everything freely. A scoped key passes
+    # its allowed categories in, and plan_node narrows the router's
+    # decision to that set. See agent/nodes.py:plan_node.
+    allowed_categories = None if ALL_CATEGORIES in scope.categories else scope.categories
+
     try:
-        result = graph.invoke({"query": request.question})
+        result = graph.invoke({"query": request.question, "allowed_categories": allowed_categories})
     except Exception:
         # logger.exception (not logger.error) captures the full traceback in
         # the structured log — the client only ever sees a generic 500, but
@@ -295,7 +315,11 @@ def query(request: QueryRequest) -> QueryResponse:
 
     logger.info(
         "query_answered",
-        extra={"categories_queried": result["categories"], "citation_count": len(result["citations"])},
+        extra={
+            "categories_queried": result["categories"],
+            "citation_count": len(result["citations"]),
+            "access_restricted": result.get("access_restricted", False),
+        },
     )
     return QueryResponse(
         answer=result["answer"],
@@ -304,4 +328,5 @@ def query(request: QueryRequest) -> QueryResponse:
             Citation(source=c["source"], section=c.get("section"), category=c.get("category"))
             for c in result["citations"]
         ],
+        access_restricted=result.get("access_restricted", False),
     )

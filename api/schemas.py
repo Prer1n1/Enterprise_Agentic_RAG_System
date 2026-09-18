@@ -24,6 +24,10 @@ class QueryResponse(BaseModel):
     answer: str
     categories_queried: List[str]
     citations: List[Citation]
+    access_restricted: bool = Field(
+        default=False,
+        description="True if the caller's API key scope narrowed which knowledge-source categories could be searched for this query.",
+    )
 
 
 class IngestRequest(BaseModel):

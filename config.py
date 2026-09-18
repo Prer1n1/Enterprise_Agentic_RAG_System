@@ -39,3 +39,10 @@ GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 # retrieval/reranker.py). Unset means retrieval silently falls back to
 # plain RRF ordering, same degrade-silently pattern as LangSmith/Drive.
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
+
+# Access control — an optional JSON file defining ADDITIONAL, more
+# restricted API keys on top of the always-present admin API_KEY above
+# (see access_control.py). Unset means no additional keys exist — just
+# the one full-access admin key, exactly as Authentication originally
+# built it. Same degrade-to-baseline pattern as everywhere else.
+ACCESS_CONTROL_CONFIG_PATH = os.getenv("ACCESS_CONTROL_CONFIG_PATH")

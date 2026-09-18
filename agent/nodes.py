@@ -35,7 +35,19 @@ Question: {query}"""
 
 
 def plan_node(state: AgentState) -> dict:
-    return {"categories": plan_categories(state["query"])}
+    """Access control (api/app.py -> agent/state.py): the router decides
+    which categories are RELEVANT, but the caller's API key scope decides
+    which categories they're ALLOWED to see — those are two different
+    questions, and this narrows the former by the latter. allowed_categories
+    is None for the admin key and for CLI usage (main.py never sets it),
+    meaning no restriction at all."""
+    categories = plan_categories(state["query"])
+    allowed = state.get("allowed_categories")
+    if allowed is None:
+        return {"categories": categories, "access_restricted": False}
+
+    filtered = [c for c in categories if c in allowed]
+    return {"categories": filtered, "access_restricted": filtered != categories}
 
 
 def route_to_sources(state: AgentState) -> List[Send]:
@@ -82,10 +94,14 @@ def _invoke_synthesis(llm, prompt: str):
 def synthesize_node(state: AgentState) -> dict:
     chunks = state["retrieved_chunks"]
     if not chunks:
-        return {
-            "answer": "I couldn't find anything in the knowledge base relevant to that question.",
-            "citations": [],
-        }
+        if state.get("access_restricted"):
+            # Distinct from "nothing relevant exists" — the honest answer
+            # here is "you're not allowed to see it," not a message that
+            # reads like the corpus itself has no relevant content.
+            answer = "Your API key doesn't have access to the knowledge source(s) relevant to this question."
+        else:
+            answer = "I couldn't find anything in the knowledge base relevant to that question."
+        return {"answer": answer, "citations": []}
 
     # The same chunk can come back from more than one category branch
     # (e.g. it scored well in both HR and General) — dedupe before synthesis.
