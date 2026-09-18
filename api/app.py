@@ -17,7 +17,7 @@ import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from langchain_openai import OpenAIEmbeddings
 
 from agent.graph import build_agent_graph
@@ -29,7 +29,9 @@ from api.schemas import (
     QueryRequest,
     QueryResponse,
 )
+from api.security import require_api_key
 from config import (
+    API_KEY,
     EMBEDDING_MODEL,
     GOOGLE_DRIVE_CREDENTIALS_PATH,
     GOOGLE_DRIVE_FOLDER_ID,
@@ -76,6 +78,11 @@ _state_lock = threading.Lock()
 async def lifespan(app: FastAPI):
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY not set — copy .env.example to .env and add your key")
+    if not API_KEY:
+        raise RuntimeError(
+            "API_KEY not set — copy .env.example to .env and set one "
+            '(generate with: python -c "import secrets; print(secrets.token_urlsafe(32))")'
+        )
     app.state.rag = AppState()
     yield
 
@@ -87,7 +94,12 @@ app = FastAPI(title="Enterprise Agentic RAG Platform", lifespan=lifespan)
 def health() -> HealthResponse:
     """A real check, not a static 'ok' — actually touches both stores so
     a broken DB file or an unreachable Chroma directory shows up here
-    instead of surfacing as a confusing 500 on the first real query."""
+    instead of surfacing as a confusing 500 on the first real query.
+
+    Deliberately NOT behind require_api_key: an orchestrator's liveness/
+    readiness probe (Docker HEALTHCHECK, a Kubernetes probe, a load
+    balancer) needs to reach this without holding a secret — that's the
+    standard convention for health endpoints, not a gap in the auth."""
     state: AppState = app.state.rag
     chunk_store_ok = True
     chunk_count = 0
@@ -150,7 +162,7 @@ def _to_ingest_response(result: IngestionResult) -> IngestResponse:
     )
 
 
-@app.post("/ingest", response_model=IngestResponse)
+@app.post("/ingest", response_model=IngestResponse, dependencies=[Depends(require_api_key)])
 def ingest(request: IngestRequest) -> IngestResponse:
     directory = Path(request.directory)
     if not directory.exists():
@@ -160,7 +172,7 @@ def ingest(request: IngestRequest) -> IngestResponse:
     return _to_ingest_response(result)
 
 
-@app.post("/documents/upload", response_model=IngestResponse)
+@app.post("/documents/upload", response_model=IngestResponse, dependencies=[Depends(require_api_key)])
 def upload_document(file: UploadFile = File(...)) -> IngestResponse:
     """Lets a document get into the platform over HTTP, instead of
     requiring filesystem/SSH access to wherever the app happens to be
@@ -186,7 +198,7 @@ def upload_document(file: UploadFile = File(...)) -> IngestResponse:
     return _to_ingest_response(result)
 
 
-@app.post("/ingest/drive", response_model=IngestResponse)
+@app.post("/ingest/drive", response_model=IngestResponse, dependencies=[Depends(require_api_key)])
 def ingest_drive() -> IngestResponse:
     """Syncs the configured Google Drive folder into a local cache, then
     reuses the identical ingest_directory() path as everything else —
@@ -207,7 +219,7 @@ def ingest_drive() -> IngestResponse:
     return _to_ingest_response(result)
 
 
-@app.post("/query", response_model=QueryResponse)
+@app.post("/query", response_model=QueryResponse, dependencies=[Depends(require_api_key)])
 def query(request: QueryRequest) -> QueryResponse:
     with _state_lock:
         graph = app.state.rag.graph  # brief hold just to read a consistent reference

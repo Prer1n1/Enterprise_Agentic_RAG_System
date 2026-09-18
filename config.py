@@ -12,6 +12,10 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
+# API layer auth — a shared secret every request to api/app.py must present
+# via the X-API-Key header (except /health). See api/security.py.
+API_KEY = os.getenv("API_KEY")
+
 # LangSmith tracing: setting these three env vars is the ENTIRE integration —
 # LangChain/LangGraph auto-instrument every LLM call once they're present, no
 # code changes needed anywhere else in the project. Get a free key at

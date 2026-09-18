@@ -225,3 +225,23 @@ There are 5 levels of RAG maturity:
 - Testability: `classify_category()`/`enrich()`/`enrich_all()`/`ingest_directory()` all gained an explicit `use_llm` (default `True`) escape hatch used ONLY by tests — `test_pipeline.py`'s pipeline-wiring tests pass `use_llm_classifier=False` to stay free/offline/deterministic (they're testing tracker/chunking wiring, not classification quality), while `test_metadata.py` gained a second, `OPENAI_API_KEY`-gated part that runs the real LLM classifier against the real SEC document specifically to prove this exact fix — same "free tests stay free, paid tests are explicit and gated" convention already established for RAGAS and semantic chunking.
 
 ---
+
+## Authentication (production-readiness pass on the API layer)
+
+**API-key auth via FastAPI's own `APIKeyHeader`, not hand-rolled header parsing**
+- Every protected route reads a real, library-provided security dependency — `fastapi.security.APIKeyHeader(name="X-API-Key")` — used the way FastAPI itself documents (`Security(...)` in a dependency function, applied per-route via `dependencies=[Depends(require_api_key)]`). Consistent with this project's standing preference for real, named tools over hand-rolled substitutes (RAGAS instead of a custom eval harness, LangSmith instead of custom tracing) — auth infrastructure is exactly the kind of thing not worth reinventing, since a subtly wrong hand-rolled comparison is a real vulnerability, not just wasted effort.
+- `secrets.compare_digest()` (Python stdlib, built specifically for this) does the actual key comparison in constant time — a plain `==` would let an attacker infer how many leading characters of a guess are correct from response-time differences alone. Small, but a real and well-known class of timing attack, not a theoretical concern invented for this project.
+- Why a single shared API key, not full user accounts / OAuth2 / JWT: this platform has no concept of "users" yet — every request is the same enterprise consuming the same corpus. A shared secret is the right-sized solution for "only our own services/tools should be able to call this API," the actual threat this closes. Full user-level auth (OAuth2, JWT with per-user scopes) would be the next step if/when the platform needs to distinguish *which* caller is asking, not just *whether* a caller is authorized at all — deliberately scoped out for now, same discipline as deferring GraphRAG and other connectors until a real need exists.
+
+**`/health` deliberately excluded from auth**
+- Health checks are read by infrastructure, not by a client with a secret — Docker's own `HEALTHCHECK` (already wired up, see the Docker section) and any real orchestrator (Kubernetes liveness/readiness probes, a load balancer) need to reach this endpoint without holding an API key. This is the standard convention for health endpoints in real deployments, not a gap being left open — a health check that required auth would need the orchestrator itself to hold and rotate a secret just to ask "are you alive," which is backwards.
+
+**Startup fails loudly if `API_KEY` isn't set — not a silent "auth disabled" fallback**
+- Mirrors the existing `OPENAI_API_KEY` check in `lifespan()`: `api/app.py` raises `RuntimeError` at startup if `API_KEY` is unset, rather than quietly serving every route unauthenticated. This is the opposite of the LangSmith tracing pattern (degrade silently when a key is missing) — LangSmith is an optional convenience, auth is a security control, and a security control that can silently turn itself off because a key is missing (a config mistake anyone could make) is a genuine footgun, not a graceful degradation.
+
+**Verified with real HTTP requests, not just "the code looks right"**
+- `GET /health`, no `X-API-Key` header → 200 (confirms the deliberate exclusion actually works, not just intended).
+- `POST /query`, no header → 401. `POST /query`, wrong key → 401. `POST /query`, correct key → 200 with a real grounded answer (asked a live question against the NIST-Cybersecurity-Framework-sourced Drive corpus and got back an accurate, correctly-cited answer — proving auth sits in front of a fully working request, not just returning 401 for everything).
+- `POST /ingest`, `POST /documents/upload`, `POST /ingest/drive` — all confirmed to reject unauthenticated requests with 401 too.
+
+---
