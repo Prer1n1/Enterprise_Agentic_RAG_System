@@ -1,6 +1,9 @@
 """End-to-end pipeline sanity check, using a generic fake embedding model
-so it runs free/offline. Confirms: first run ingests everything, second
-run (no changes) skips everything via the tracker."""
+and use_llm_classifier=False (forces the free keyword-based category
+fallback, not a real LLM call) so it runs free/offline. Confirms: first run
+ingests everything, second run (no changes) skips everything via the
+tracker. The real LLM classification path is verified separately in
+test_metadata.py, gated behind OPENAI_API_KEY."""
 
 import hashlib
 import shutil
@@ -32,7 +35,7 @@ tracker = IngestionTracker(db_path=db_path)
 fake_embeddings = HashFakeEmbeddings()
 
 print("=== Run 1: first ingestion, all files are new ===")
-result1 = ingest_directory(SAMPLE_DIR, tracker=tracker, embeddings=fake_embeddings)
+result1 = ingest_directory(SAMPLE_DIR, tracker=tracker, embeddings=fake_embeddings, use_llm_classifier=False)
 print(f"ingested_files: {len(result1.ingested_files)}")
 print(f"skipped_unchanged: {len(result1.skipped_unchanged)}")
 print(f"chunks produced: {len(result1.chunks)}")
@@ -41,7 +44,7 @@ assert len(result1.skipped_unchanged) == 0
 assert len(result1.chunks) > 0
 
 print("\n=== Run 2: same files, nothing changed ===")
-result2 = ingest_directory(SAMPLE_DIR, tracker=tracker, embeddings=fake_embeddings)
+result2 = ingest_directory(SAMPLE_DIR, tracker=tracker, embeddings=fake_embeddings, use_llm_classifier=False)
 print(f"ingested_files: {len(result2.ingested_files)}")
 print(f"skipped_unchanged: {len(result2.skipped_unchanged)}")
 print(f"chunks produced: {len(result2.chunks)}")
@@ -60,12 +63,12 @@ root_b.mkdir()
 (root_b / "b.csv").write_text("policy_id,department,rule\nP-2,IT,Some IT rule\n")
 
 shared_tracker = IngestionTracker(db_path=tmp_dir / "shared_manifest.db")
-result_a = ingest_directory(root_a, tracker=shared_tracker, embeddings=fake_embeddings)
+result_a = ingest_directory(root_a, tracker=shared_tracker, embeddings=fake_embeddings, use_llm_classifier=False)
 print(f"ingest root_a: ingested={len(result_a.ingested_files)} deleted={len(result_a.deleted_files)}")
 assert len(result_a.ingested_files) == 1
 assert len(result_a.deleted_files) == 0
 
-result_b = ingest_directory(root_b, tracker=shared_tracker, embeddings=fake_embeddings)
+result_b = ingest_directory(root_b, tracker=shared_tracker, embeddings=fake_embeddings, use_llm_classifier=False)
 print(f"ingest root_b: ingested={len(result_b.ingested_files)} deleted={len(result_b.deleted_files)}")
 assert len(result_b.ingested_files) == 1
 assert len(result_b.deleted_files) == 0, "root_a's file must NOT be reported as deleted just because it's absent from root_b's listing"

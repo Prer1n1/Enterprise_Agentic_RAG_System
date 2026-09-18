@@ -10,14 +10,22 @@ import hashlib
 import re
 from typing import List, Optional
 
+from langchain_openai import ChatOpenAI
 from langdetect import LangDetectException, detect
+from pydantic import BaseModel, Field
 
 from .schema import Document
 
-# Rule-based, not ML: cheap, deterministic, and easy to explain/debug.
-# Production alternative: zero-shot LLM classification or a small fine-tuned
-# classifier for documents that mix topics or use domain-specific wording
-# these keyword lists don't cover.
+# Keyword matching is cheap, deterministic, and easy to explain/debug — kept
+# as the FALLBACK classifier (used when the LLM call fails, and directly
+# testable with zero API cost), not as the primary path anymore. Verified
+# limitation that motivated adding an LLM primary: a real SEC investor
+# bulletin scored 0 Finance keyword hits across 26 chunks (17 Legal, 6
+# General, 3 HR instead) because its real-world vocabulary ("offering",
+# "prospectus", "securities") never overlaps with this list's
+# synthetic-sample-data terms ("expense", "budget", "reimbursement"). A
+# keyword list tuned to one corpus doesn't generalize — see
+# docs/design-decisions.md.
 _CATEGORY_KEYWORDS = {
     "HR": {"leave", "employee", "onboarding", "payroll", "benefits", "hiring", "remote work"},
     "Finance": {"expense", "budget", "invoice", "payment", "reimbursement", "cost"},
@@ -40,6 +48,21 @@ _WORD_RE = re.compile(r"[a-zA-Z]{3,}")
 _MIN_WORDS_FOR_LANG_DETECT = 20
 _DEFAULT_LANGUAGE = "en"
 
+_CLASSIFIER_MODEL = "gpt-4o-mini"
+# Category classification doesn't need a whole page/section of text to
+# decide a topic — capping keeps cost down without hurting accuracy.
+_MAX_CHARS_FOR_CLASSIFICATION = 3000
+
+
+class CategoryDecision(BaseModel):
+    category: str = Field(
+        description=(
+            f"The single best-fitting category for this document excerpt. "
+            f"Must be exactly one of: {CATEGORIES}. Use 'General' only if "
+            f"none of the specific categories genuinely fit."
+        )
+    )
+
 
 def stable_doc_id(source: str) -> str:
     """Stable ID for the ORIGINAL source file (not per-chunk/section) —
@@ -57,16 +80,11 @@ def detect_language(text: str, word_count: int) -> str:
         return "unknown"  # no alphabetic content to detect from
 
 
-def classify_category(text: str, hint: Optional[str] = None) -> str:
-    """hint: an explicit category from structured source data (e.g. a
-    CSV's "department" column). Trusted outright when it's a known
-    category — ground-truth structured data should never be overridden
-    by keyword-matching free text (verified bug: a CSV row with
-    department=IT about "password rotation" was misclassified as
-    Security by keywords alone, since "password" is a Security keyword)."""
-    if hint and hint in CATEGORIES:
-        return hint
-
+def _keyword_classify_category(text: str) -> str:
+    """The original rule-based classifier. Cheap, deterministic, zero API
+    cost — kept as the fallback for when the LLM call fails (network error,
+    missing API key, etc.), so a transient failure degrades to "less
+    accurate" rather than "ingestion breaks"."""
     lowered = text.lower()
     scores = {
         category: sum(1 for kw in keywords if kw in lowered)
@@ -76,7 +94,52 @@ def classify_category(text: str, hint: Optional[str] = None) -> str:
     return best_category if best_score > 0 else "General"
 
 
-def enrich(document: Document) -> Document:
+def _llm_classify_category(text: str, llm=None) -> Optional[str]:
+    """Zero-shot LLM classification — the fix for the keyword classifier's
+    real-world vocabulary gap (see _CATEGORY_KEYWORDS' docstring above).
+    Returns None on ANY failure (bad API key, network error, malformed
+    output) so the caller falls back to the keyword classifier instead of
+    letting a transient LLM failure break ingestion outright."""
+    try:
+        llm = llm or ChatOpenAI(model=_CLASSIFIER_MODEL, temperature=0)
+        structured_llm = llm.with_structured_output(CategoryDecision)
+        decision = structured_llm.invoke(
+            f"Categories: {CATEGORIES}\n\n"
+            f"Document excerpt:\n{text[:_MAX_CHARS_FOR_CLASSIFICATION]}\n\n"
+            f"Which single category best fits this content?"
+        )
+        return decision.category if decision.category in CATEGORIES else None
+    except Exception:
+        return None
+
+
+def classify_category(
+    text: str,
+    hint: Optional[str] = None,
+    llm=None,
+    use_llm: bool = True,
+) -> str:
+    """hint: an explicit category from structured source data (e.g. a
+    CSV's "department" column). Trusted outright when it's a known
+    category — ground-truth structured data should never be overridden
+    by classification of free text (verified bug: a CSV row with
+    department=IT about "password rotation" was misclassified as
+    Security by keywords alone, since "password" is a Security keyword).
+
+    use_llm=False forces the free/offline keyword path — used by tests
+    that need to stay fast, deterministic, and cost nothing."""
+    if hint and hint in CATEGORIES:
+        return hint
+
+    if use_llm:
+        llm_result = _llm_classify_category(text, llm=llm)
+        if llm_result:
+            return llm_result
+
+    return _keyword_classify_category(text)
+
+
+def enrich(document: Document, llm=None, use_llm: bool = True) -> Document:
     """Adds doc_id, word_count, language, and category into
     metadata.extra. Mutates and returns the same Document."""
     extra = document.metadata.extra
@@ -84,9 +147,11 @@ def enrich(document: Document) -> Document:
     word_count = len(_WORD_RE.findall(document.content))
     extra["word_count"] = word_count
     extra["language"] = detect_language(document.content, word_count)
-    extra["category"] = classify_category(document.content, hint=extra.get("category_hint"))
+    extra["category"] = classify_category(
+        document.content, hint=extra.get("category_hint"), llm=llm, use_llm=use_llm
+    )
     return document
 
 
-def enrich_all(documents: List[Document]) -> List[Document]:
-    return [enrich(doc) for doc in documents]
+def enrich_all(documents: List[Document], llm=None, use_llm: bool = True) -> List[Document]:
+    return [enrich(doc, llm=llm, use_llm=use_llm) for doc in documents]

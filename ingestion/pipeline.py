@@ -30,6 +30,8 @@ def ingest_directory(
     directory: Union[str, Path],
     tracker: IngestionTracker = None,
     embeddings=None,
+    classifier_llm=None,
+    use_llm_classifier: bool = True,
 ) -> IngestionResult:
     directory = Path(directory)
     tracker = tracker or IngestionTracker()
@@ -55,7 +57,9 @@ def ingest_directory(
             result.skipped_unchanged.append(canonical_source(file_path))
             continue
 
-        docs_to_chunk.extend(enrich_all(load_document(file_path)))
+        docs_to_chunk.extend(
+            enrich_all(load_document(file_path), llm=classifier_llm, use_llm=use_llm_classifier)
+        )
         files_pending_mark.append(file_path)
 
     if docs_to_chunk:
