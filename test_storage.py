@@ -33,7 +33,7 @@ class HashFakeEmbeddings:
 tmp_dir = Path(tempfile.mkdtemp())
 fake = HashFakeEmbeddings()
 
-all_docs = enrich_all(load_document(SAMPLE_DIR / "security_policy.docx"))
+all_docs = enrich_all(load_document(SAMPLE_DIR / "security_policy.docx"), use_llm=False)
 chunks = chunk_documents(all_docs, embeddings=fake)
 print(f"Built {len(chunks)} chunks from security_policy.docx")
 

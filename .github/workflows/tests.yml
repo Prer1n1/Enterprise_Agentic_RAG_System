@@ -1,0 +1,72 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  free-tests:
+    name: Free / offline tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # These 6 scripts use fake embeddings / the keyword classifier
+      # fallback (use_llm=False) instead of real OpenAI calls — see each
+      # file's own docstring. No API key needed, so they run unconditionally
+      # on every push and PR, including from forks.
+      - name: Run offline test suite
+        run: |
+          python test_loaders.py
+          python test_metadata.py
+          python test_chunking.py
+          python test_tracker.py
+          python test_pipeline.py
+          python test_storage.py
+
+  live-tests:
+    name: Live tests (real OpenAI calls)
+    runs-on: ubuntu-latest
+    # test_retrieval.py and test_agent.py make real, billed OpenAI API
+    # calls (embeddings + chat) — opt-in via a plain repo secret, not
+    # forced on every push. Add an OPENAI_API_KEY secret under
+    # Settings -> Secrets and variables -> Actions -> New repository
+    # secret to enable this job; without it, the "Run live test suite"
+    # step below is skipped (not failed) and only free-tests runs.
+    # A fork PR has no access to repo secrets (GitHub's own default), so
+    # this degrades to the same clean skip automatically, no extra
+    # handling needed.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check for OPENAI_API_KEY secret
+        id: check_key
+        run: echo "has_key=${{ secrets.OPENAI_API_KEY != '' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Run live test suite (real OpenAI calls)
+        if: steps.check_key.outputs.has_key == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python test_retrieval.py
+          python test_agent.py
+
+      - name: Skip notice
+        if: steps.check_key.outputs.has_key != 'true'
+        run: echo "OPENAI_API_KEY secret not set — skipping live tests. See job description."

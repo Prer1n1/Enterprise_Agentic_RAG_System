@@ -1,5 +1,7 @@
 # Enterprise Agentic RAG Platform
 
+[![Tests](https://github.com/Prer1n1/Enterprise_Agentic_RAG_System/actions/workflows/tests.yml/badge.svg)](https://github.com/Prer1n1/Enterprise_Agentic_RAG_System/actions/workflows/tests.yml)
+
 A multi-agent RAG platform for enterprise knowledge search across PDF, DOCX, HTML, and CSV sources — built with LangChain, LangGraph, and a FastAPI REST layer.
 
 An LLM router decides which knowledge source(s) (HR / Finance / Security / IT / Legal) are relevant to a question, queries them **in parallel** via a LangGraph workflow, and synthesizes one grounded, cited answer from hybrid (dense + keyword) retrieval results.
@@ -105,22 +107,26 @@ docs/         design-decisions.md — the full reasoning log
 
 ## Testing
 
-Each component has a standalone `test_*.py` script at the project root (no pytest framework yet — these are direct sanity checks with assertions, runnable individually):
+Each component has a standalone `test_*.py` script at the project root (no pytest framework yet — these are direct sanity checks with assertions, runnable individually). The first 6 use fake embeddings / the keyword classifier fallback and need no API key; the last 2 make real OpenAI calls:
 
 ```bash
+# free / offline — no API key needed
 python test_loaders.py
 python test_metadata.py
 python test_chunking.py
 python test_tracker.py
 python test_pipeline.py
 python test_storage.py
+
+# live — real OpenAI calls, needs OPENAI_API_KEY in .env
 python test_retrieval.py
 python test_agent.py
 ```
 
+CI (`.github/workflows/tests.yml`) runs the free suite on every push and PR automatically, no setup needed. The live suite also runs in CI, but only if an `OPENAI_API_KEY` repository secret has been added (Settings → Secrets and variables → Actions) — without it, that job just skips cleanly instead of failing.
+
 ## Status
 
-Built so far: Ingestion & Processing, Storage, Retrieval, Agent Orchestration (LangGraph), Evaluation & Observability (RAGAS, hallucination detection, LangSmith tracing), API Layer (FastAPI) with API-key authentication and structured JSON logging, Reliability (retry logic for transient OpenAI failures, a fixed data-integrity bug in the ingestion tracker), Docker packaging.
-Not yet built: CI.
+Built so far: Ingestion & Processing, Storage, Retrieval, Agent Orchestration (LangGraph), Evaluation & Observability (RAGAS, hallucination detection, LangSmith tracing), API Layer (FastAPI) with API-key authentication and structured JSON logging, Reliability (retry logic for transient OpenAI failures, a fixed data-integrity bug in the ingestion tracker), Docker packaging, CI (GitHub Actions).
 
-This is a tested prototype demonstrating the full Agentic RAG architecture end-to-end — not a hardened production deployment. See the "Evaluation & Observability" and earlier sections of [docs/design-decisions.md](docs/design-decisions.md) for what's still missing before it would be.
+This is a tested prototype demonstrating the full Agentic RAG architecture end-to-end — not a hardened production deployment. See [docs/design-decisions.md](docs/design-decisions.md) for the reasoning behind every choice and what's still out of scope.
