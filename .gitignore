@@ -7,4 +7,11 @@ __pycache__/
 storage/chroma_db/
 storage/chunk_store.db
 storage/ingestion_manifest.db
+storage/drive_cache/
 uploads/
+demo_docs_for_drive/
+
+# Google Drive service account key — never commit real credentials.
+credentials/
+*.json.key
+google_drive_credentials.json

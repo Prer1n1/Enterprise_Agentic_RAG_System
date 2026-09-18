@@ -29,13 +29,19 @@ from api.schemas import (
     QueryRequest,
     QueryResponse,
 )
-from config import EMBEDDING_MODEL, OPENAI_API_KEY
+from config import (
+    EMBEDDING_MODEL,
+    GOOGLE_DRIVE_CREDENTIALS_PATH,
+    GOOGLE_DRIVE_FOLDER_ID,
+    OPENAI_API_KEY,
+)
 from ingestion.pipeline import SUPPORTED_EXTENSIONS, IngestionResult, ingest_directory
 from retrieval.hybrid_retriever import HybridRetriever
 from storage.chunk_store import ChunkStore
 from storage.vector_store import add_chunks, delete_by_source, get_vector_store
 
 UPLOAD_DIR = Path("uploads")
+DRIVE_CACHE_DIR = Path("storage") / "drive_cache"
 
 
 class AppState:
@@ -177,6 +183,27 @@ def upload_document(file: UploadFile = File(...)) -> IngestResponse:
     # ingestion (unchanged files there are still skipped via content hash),
     # so there's exactly one ingestion code path to trust, not two.
     result = _ingest_and_persist(UPLOAD_DIR)
+    return _to_ingest_response(result)
+
+
+@app.post("/ingest/drive", response_model=IngestResponse)
+def ingest_drive() -> IngestResponse:
+    """Syncs the configured Google Drive folder into a local cache, then
+    reuses the identical ingest_directory() path as everything else —
+    the connector's only job is making Drive content look like local
+    files (see ingestion/connectors/google_drive.py)."""
+    if not GOOGLE_DRIVE_CREDENTIALS_PATH or not GOOGLE_DRIVE_FOLDER_ID:
+        raise HTTPException(
+            status_code=400,
+            detail="GOOGLE_DRIVE_CREDENTIALS_PATH and GOOGLE_DRIVE_FOLDER_ID must be set in .env",
+        )
+
+    from ingestion.connectors.google_drive import GoogleDriveConnector
+
+    connector = GoogleDriveConnector(GOOGLE_DRIVE_CREDENTIALS_PATH, GOOGLE_DRIVE_FOLDER_ID)
+    connector.sync_to_local(DRIVE_CACHE_DIR)
+
+    result = _ingest_and_persist(DRIVE_CACHE_DIR)
     return _to_ingest_response(result)
 
 

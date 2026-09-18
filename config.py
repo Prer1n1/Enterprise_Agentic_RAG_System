@@ -24,3 +24,9 @@ if LANGSMITH_API_KEY:
     os.environ.setdefault("LANGSMITH_TRACING", "true")
     os.environ.setdefault("LANGSMITH_API_KEY", LANGSMITH_API_KEY)
     os.environ.setdefault("LANGSMITH_PROJECT", LANGSMITH_PROJECT)
+
+# Google Drive connector — both unset means the connector is simply
+# unavailable, same "degrade silently, don't break the rest of the app"
+# pattern as LangSmith above.
+GOOGLE_DRIVE_CREDENTIALS_PATH = os.getenv("GOOGLE_DRIVE_CREDENTIALS_PATH")
+GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")

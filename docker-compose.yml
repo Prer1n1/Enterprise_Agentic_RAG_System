@@ -18,3 +18,6 @@ services:
       - ./storage:/app/storage
       - ./sample_data:/app/sample_data
       - ./uploads:/app/uploads
+      # Read-only: the Drive connector only ever reads this key, and a
+      # container should never have write access to its own credentials.
+      - ./credentials:/app/credentials:ro
