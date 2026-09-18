@@ -245,3 +245,25 @@ There are 5 levels of RAG maturity:
 - `POST /ingest`, `POST /documents/upload`, `POST /ingest/drive` — all confirmed to reject unauthenticated requests with 401 too.
 
 ---
+
+## Structured Logging (production-readiness pass on the API layer)
+
+**stdlib `logging` + `python-json-logger`, not `structlog` or a hand-rolled formatter**
+- The API server already depends on several libraries that log through Python's stdlib `logging` module — uvicorn, the `openai` client (via `httpx`), `langchain`. Attaching one JSON formatter to the root logger (`logging_config.py`) means every one of those gets structured for free, with zero per-library integration code. `structlog` is a strong library too, but it only structures logs emitted through its own API — getting third-party stdlib logs into the same format needs extra bridging. Given this project already leans on several stdlib-logging libraries, augmenting stdlib logging was the smaller, more direct change.
+- **Verified this "for free" claim directly, not just assumed it**: ran a real query against the live server and confirmed `httpx`'s own request logs (`"HTTP Request: POST https://api.openai.com/v1/chat/completions..."`) came out as valid JSON alongside this project's own log lines — proof the root-logger approach actually captures dependency logs, not a theoretical benefit.
+- Honest scope boundary, documented rather than glossed over: uvicorn's own request-access logs (`INFO:     127.0.0.1:... "GET /health HTTP/1.1" 200 OK`) stay in uvicorn's default plain-text format. Uvicorn attaches its own handlers directly to its `uvicorn`/`uvicorn.access`/`uvicorn.error` loggers rather than propagating to root, so this project's JSON formatter doesn't reach them without also overriding uvicorn's own `--log-config` — a real, available uvicorn feature, deliberately left as a documented follow-up rather than added now, same discipline as other deferred items (GraphRAG, other source connectors).
+
+**Scoped to the API server only — main.py's CLI output is untouched**
+- `configure_logging()` is called from `api/app.py`, not from `config.py` (which both `main.py` and `api/app.py` import). A human running the CLI and watching a terminal wants readable `print()` output, not JSON lines — the same "match the tool to who's actually reading it" reasoning used throughout this project (RAGAS evaluation is CLI-only for the same kind of reason). Structured logs are for a machine/log-aggregator to consume from a long-running server process, which only the API is.
+
+**What gets logged, and what deliberately doesn't**
+- Lifecycle events: `startup_begin`/`startup_complete` (with the loaded chunk count) and `shutdown`; `ingestion_begin`/`ingestion_complete` (file counts, chunks stored) shared by all three ingestion routes; `document_uploaded` (filename); `drive_sync_begin`; `query_received` (a truncated question preview) and `query_answered` (routed categories, citation count).
+- `auth_failed` (in `api/security.py`) logs the request path and client IP on a rejected request — but never the API key that was provided, right or wrong. Logging a wrong-but-close guess is its own small leak, and logging a correct key on some hypothetical future bug would be worse — secrets don't belong in logs, full stop.
+- `/query`'s exception handler changed from returning the raw exception message to the client (`f"Agent execution failed: {e}"`) to a generic `"Agent execution failed"`, with `logger.exception("query_failed")` capturing the full traceback server-side instead. Real production posture: internal error detail belongs in logs an operator can see, not in a response any caller can see — a stack trace or internal error string is information disclosure once it's exposed over the wire.
+
+**Verified with real HTTP requests against the live server, not just "the code runs"**
+- `GET /health` (no key) → clean startup logs, no stray warnings.
+- `POST /query` with no key → `{"level": "WARNING", "message": "auth_failed", "path": "/query", "client": "127.0.0.1"}`.
+- `POST /query` with a valid key → `query_received` then, after the real LangGraph run, `query_answered` with `categories_queried: ["IT", "Security"]` and a real citation count — logs and behavior matching each other exactly, not just present.
+
+---

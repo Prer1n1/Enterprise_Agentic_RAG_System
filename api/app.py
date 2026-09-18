@@ -12,6 +12,7 @@ Run with: uvicorn api.app:app --reload
 
 from __future__ import annotations
 
+import logging
 import shutil
 import threading
 from contextlib import asynccontextmanager
@@ -38,9 +39,16 @@ from config import (
     OPENAI_API_KEY,
 )
 from ingestion.pipeline import SUPPORTED_EXTENSIONS, IngestionResult, ingest_directory
+from logging_config import configure_logging
 from retrieval.hybrid_retriever import HybridRetriever
 from storage.chunk_store import ChunkStore
 from storage.vector_store import add_chunks, delete_by_source, get_vector_store
+
+# Called here, not in config.py: config.py is imported by main.py's CLI too,
+# and a human watching CLI output wants readable print()s, not JSON log
+# lines — structured logging is scoped to the long-running API server only.
+configure_logging()
+logger = logging.getLogger(__name__)
 
 UPLOAD_DIR = Path("uploads")
 DRIVE_CACHE_DIR = Path("storage") / "drive_cache"
@@ -83,8 +91,11 @@ async def lifespan(app: FastAPI):
             "API_KEY not set — copy .env.example to .env and set one "
             '(generate with: python -c "import secrets; print(secrets.token_urlsafe(32))")'
         )
+    logger.info("startup_begin")
     app.state.rag = AppState()
+    logger.info("startup_complete", extra={"chunk_count": len(app.state.rag.chunk_store.get_all())})
     yield
+    logger.info("shutdown")
 
 
 app = FastAPI(title="Enterprise Agentic RAG Platform", lifespan=lifespan)
@@ -128,6 +139,7 @@ def _ingest_and_persist(directory: Path) -> IngestionResult:
     directory and persist the result,' so the delete-then-insert
     correctness logic lives in exactly one place instead of two copies
     that could drift apart."""
+    logger.info("ingestion_begin", extra={"directory": str(directory)})
     with _state_lock:
         state: AppState = app.state.rag
         result = ingest_directory(directory, embeddings=state.embeddings)
@@ -150,6 +162,16 @@ def _ingest_and_persist(directory: Path) -> IngestionResult:
         if result.ingested_files or result.deleted_files:
             state.rebuild_retriever()
 
+    logger.info(
+        "ingestion_complete",
+        extra={
+            "directory": str(directory),
+            "ingested_files": len(result.ingested_files),
+            "skipped_unchanged": len(result.skipped_unchanged),
+            "deleted_files": len(result.deleted_files),
+            "chunks_stored": len(result.chunks),
+        },
+    )
     return result
 
 
@@ -189,6 +211,7 @@ def upload_document(file: UploadFile = File(...)) -> IngestResponse:
     dest = UPLOAD_DIR / file.filename
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
+    logger.info("document_uploaded", extra={"filename": file.filename})
 
     # Re-ingesting the whole uploads/ directory, not just the new file, is
     # deliberate: it reuses the SAME incremental-tracker path as directory
@@ -212,6 +235,7 @@ def ingest_drive() -> IngestResponse:
 
     from ingestion.connectors.google_drive import GoogleDriveConnector
 
+    logger.info("drive_sync_begin", extra={"folder_id": GOOGLE_DRIVE_FOLDER_ID})
     connector = GoogleDriveConnector(GOOGLE_DRIVE_CREDENTIALS_PATH, GOOGLE_DRIVE_FOLDER_ID)
     connector.sync_to_local(DRIVE_CACHE_DIR)
 
@@ -224,11 +248,25 @@ def query(request: QueryRequest) -> QueryResponse:
     with _state_lock:
         graph = app.state.rag.graph  # brief hold just to read a consistent reference
 
+    # question_preview, not the full question: keeps log lines short and
+    # scannable without truncating anything that actually matters for
+    # debugging (the routed categories + citation sources below cover that).
+    logger.info("query_received", extra={"question_preview": request.question[:80]})
+
     try:
         result = graph.invoke({"query": request.question})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Agent execution failed: {e}") from e
+    except Exception:
+        # logger.exception (not logger.error) captures the full traceback in
+        # the structured log — the client only ever sees a generic 500, but
+        # whoever's watching these logs gets the real failure, not just "it
+        # broke."
+        logger.exception("query_failed")
+        raise HTTPException(status_code=500, detail="Agent execution failed") from None
 
+    logger.info(
+        "query_answered",
+        extra={"categories_queried": result["categories"], "citation_count": len(result["citations"])},
+    )
     return QueryResponse(
         answer=result["answer"],
         categories_queried=result["categories"],
