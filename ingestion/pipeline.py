@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Union
 
+from pii_redaction import PIIDetectionFailed, redact_pii
 from prompt_injection import detect_injection
 
 from .chunking import Chunk, chunk_documents
@@ -34,6 +35,12 @@ class IngestionResult:
     # closed: never chunked, never persisted, never marked ingested. See
     # docs/design-decisions.md ("Prompt Injection Defense").
     blocked_files: List[str] = field(default_factory=list)
+    # Files where the PII detector itself failed (network error, exhausted
+    # retries) — distinct from blocked_files: the content isn't known to be
+    # malicious, we just couldn't verify it's safe to store. Fail closed
+    # here too, for a different reason. See docs/design-decisions.md
+    # ("PII Redaction").
+    pii_check_failed: List[str] = field(default_factory=list)
 
 
 def ingest_directory(
@@ -44,6 +51,8 @@ def ingest_directory(
     use_llm_classifier: bool = True,
     injection_llm=None,
     use_llm_injection_detector: bool = True,
+    pii_llm=None,
+    use_pii_redaction: bool = True,
 ) -> IngestionResult:
     directory = Path(directory)
     tracker = tracker or IngestionTracker()
@@ -83,6 +92,22 @@ def ingest_directory(
         ):
             result.blocked_files.append(canonical_source(file_path))
             continue
+
+        # PII redaction — mutates doc.content IN PLACE, before enrichment
+        # or chunking, so raw PII never reaches the classifier, the
+        # chunker, the embedding model, or either store. Unlike the
+        # injection check, finding PII does NOT block the file — the
+        # whole point is to scrub and still ingest it. Only a detector
+        # FAILURE (not a positive finding) blocks the file, fail-closed,
+        # since we can't guarantee unredacted PII wouldn't be stored.
+        # See docs/design-decisions.md ("PII Redaction").
+        if use_pii_redaction:
+            try:
+                for doc in documents:
+                    doc.content, _ = redact_pii(doc.content, llm=pii_llm)
+            except PIIDetectionFailed:
+                result.pii_check_failed.append(canonical_source(file_path))
+                continue
 
         docs_to_chunk.extend(
             enrich_all(documents, llm=classifier_llm, use_llm=use_llm_classifier)

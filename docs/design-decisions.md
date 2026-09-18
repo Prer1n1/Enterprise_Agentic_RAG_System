@@ -361,3 +361,29 @@ There are 5 levels of RAG maturity:
 **Verified in CI on GitHub's real runners too**: pushing this feature triggered [workflow run 35393427532](https://github.com/Prer1n1/Enterprise_Agentic_RAG_System/actions) — both `free-tests` (including `test_access_control.py`'s offline mechanics) and `live-tests` passed.
 
 ---
+
+## PII Redaction
+
+**LLM-based detection, chosen over Microsoft Presidio — a real, deliberate tradeoff, not the "obviously correct" choice**
+- Microsoft Presidio is the purpose-built, industry-standard tool for exactly this job (regex recognizers + spaCy NER, self-hosted). It was the initially-recommended option specifically because it never sends document content to a third party just to check it for PII — which matters more here than it did for reranking (Cohere) or classification (OpenAI), since the whole point of THIS feature is protecting sensitive data.
+- Chosen instead: LLM-based detection, reusing the existing OpenAI setup — same structured-output pattern as `classify_category`/`detect_injection`. Zero new dependency, zero new model download (Presidio's spaCy NER model is a real, one-time few-hundred-MB cost). The real tension, named honestly rather than glossed over: this sends document content to OpenAI specifically to find the PII in it — a bit backwards for a PII-protection feature, and likely less precise/battle-tested for PII specifically than a purpose-built NER engine. Accepted in exchange for architectural consistency with the rest of this project.
+
+**Scope, deliberately narrow: high-sensitivity structured PII only, not person names**
+- Detected types: `SSN`, `CREDIT_CARD`, `BANK_ACCOUNT`, `EMAIL`, `PHONE_NUMBER`, `DATE_OF_BIRTH`, `SALARY`. Deliberately excludes ordinary person names — redacting every name in a policy document ("contact Jane Doe in HR") would make the corpus far less useful while protecting against a much lower-risk exposure than an SSN or bank account number. Real DLP systems tier PII the same way (basic vs. sensitive).
+
+**Redacted BEFORE chunking, embedding, or storage — not just at output time**
+- `ingestion/pipeline.py` calls `redact_pii()` on every loaded `Document`'s content, mutating it in place, BEFORE `enrich_all()`/chunking. This means raw PII never reaches the category classifier, the chunker, the embedding model (OpenAI never even sees the raw value to embed it), the reranker (Cohere never sees it either), or either store. An output-only redaction (scrub only the final synthesized answer) was considered and rejected: it would leave raw PII sitting in the searchable index indefinitely, retrievable by anyone with read access, with redaction only as thin as the LAST step before display — this is the more defensible, "PII never persists" version of the feature.
+- Applied uniformly to every ingested document regardless of category — a Finance document (bank account numbers) or an IT document (an employee's personal email in a support ticket) can contain PII just as easily as an HR one.
+
+**Fail-closed on detector failure — consistent with Prompt Injection Defense's policy, not a new, different rule**
+- Unlike `classify_category`/`detect_injection`, there is NO keyword fallback here. If the LLM call fails even after retries (`retry_openai_call`), `redact_pii()` raises `PIIDetectionFailed` and `ingestion/pipeline.py` blocks that file entirely (`pii_check_failed`, distinct from `blocked_files` — the content isn't known to be malicious, it's just unverified). A transient outage should never be able to leak real PII into permanent storage just because the safety check couldn't run — the same reasoning that led to "block ingestion entirely" for prompt injection, applied consistently rather than inventing a third, different failure policy for this feature.
+- Positive detection does NOT block the file — that would defeat the purpose. Finding PII means "scrub and still ingest," not "reject." Only a detector FAILURE blocks ingestion.
+
+**Verified end-to-end against the real running server and the real persisted store, not just the API response**
+- Uploaded a real document via `/documents/upload` containing a synthetic SSN, salary, email, and phone number for a fictional new hire. Response reported normal ingestion (not blocked): `chunks_stored: 1`.
+- **Directly inspected the persisted `ChunkStore`** (not just the API response) — the stored chunk content had `[SSN_REDACTED]`, `[SALARY_REDACTED]`, `[EMAIL_REDACTED]`, `[PHONE_NUMBER_REDACTED]` in place of the real values, with the person's name and the surrounding policy text (onboarding deadline) left intact, exactly matching the deliberate scoping decision above. This is the strongest possible proof for this feature: not "the API said it worked," but "the raw values are provably absent from the actual database."
+- A real query about the new hire's onboarding ("What are the onboarding requirements for...") answered correctly using the surviving non-PII content, with no PII in the answer or citations.
+- Structured logs confirmed the audit trail: `pii_redacted` with `types: ["SSN", "SALARY", "EMAIL", "PHONE_NUMBER"], count: 4`.
+- `test_pii_redaction.py` covers the offline mechanics via a fake structured-output LLM double (redaction, no-op on clean text, fail-closed on a simulated failure, and the full `ingest_directory()` integration proving chunked content never contains the raw PII), plus a gated Part 2 with a real LLM call on realistic synthetic PII.
+
+---

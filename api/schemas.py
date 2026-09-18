@@ -43,6 +43,10 @@ class IngestResponse(BaseModel):
         default_factory=list,
         description="Files whose content was flagged as a suspected prompt injection attempt and blocked from ingestion.",
     )
+    pii_check_failed: List[str] = Field(
+        default_factory=list,
+        description="Files blocked because the PII detector itself failed (fail-closed) — not known to be malicious, just unverified.",
+    )
 
 
 class HealthResponse(BaseModel):

@@ -73,6 +73,7 @@ result = ingest_directory(
     embeddings=HashFakeEmbeddings(),
     use_llm_classifier=False,
     use_llm_injection_detector=False,
+    use_pii_redaction=False,
 )
 print(f"blocked_files: {result.blocked_files}")
 print(f"ingested_files: {result.ingested_files}")

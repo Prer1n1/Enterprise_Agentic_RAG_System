@@ -183,10 +183,13 @@ def _ingest_and_persist(directory: Path) -> IngestionResult:
             "deleted_files": len(result.deleted_files),
             "chunks_stored": len(result.chunks),
             "blocked_files": len(result.blocked_files),
+            "pii_check_failed": len(result.pii_check_failed),
         },
     )
     if result.blocked_files:
         logger.warning("ingestion_blocked_files", extra={"blocked_files": result.blocked_files})
+    if result.pii_check_failed:
+        logger.warning("ingestion_pii_check_failed", extra={"pii_check_failed": result.pii_check_failed})
     return result
 
 
@@ -197,6 +200,7 @@ def _to_ingest_response(result: IngestionResult) -> IngestResponse:
         deleted_files=len(result.deleted_files),
         chunks_stored=len(result.chunks),
         blocked_files=result.blocked_files,
+        pii_check_failed=result.pii_check_failed,
     )
 
 

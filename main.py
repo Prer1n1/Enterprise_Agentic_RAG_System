@@ -79,6 +79,10 @@ def _print_ingest_result(result: IngestionResult) -> None:
         print(f"BLOCKED (suspected prompt injection): {len(result.blocked_files)} file(s)")
         for source in result.blocked_files:
             print(f"  - {source}")
+    if result.pii_check_failed:
+        print(f"BLOCKED (PII check failed, fail-closed): {len(result.pii_check_failed)} file(s)")
+        for source in result.pii_check_failed:
+            print(f"  - {source}")
 
 
 def cmd_ingest(args: argparse.Namespace) -> None:
