@@ -358,4 +358,6 @@ There are 5 levels of RAG maturity:
 
 **Known, honestly-scoped limitation**: the admin key is compared with `secrets.compare_digest()` (constant-time), but additional scoped keys are matched via a direct Python dict lookup — a reasonable tradeoff for a larger, lower-privilege, individually-revocable set of credentials (this is effectively what a real system's hash-indexed key lookup does too), but not literally constant-time across the whole scoped-key set. Documented rather than silently accepted, same discipline as this project's other honestly-scoped boundaries (uvicorn's own access logs, the two-phase-commit gap between the two stores).
 
+**Verified in CI on GitHub's real runners too**: pushing this feature triggered [workflow run 35393427532](https://github.com/Prer1n1/Enterprise_Agentic_RAG_System/actions) — both `free-tests` (including `test_access_control.py`'s offline mechanics) and `live-tests` passed.
+
 ---
