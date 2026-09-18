@@ -14,6 +14,8 @@ from langchain_openai import ChatOpenAI
 from langdetect import LangDetectException, detect
 from pydantic import BaseModel, Field
 
+from retry_utils import retry_openai_call
+
 from .schema import Document
 
 # Keyword matching is cheap, deterministic, and easy to explain/debug — kept
@@ -94,6 +96,15 @@ def _keyword_classify_category(text: str) -> str:
     return best_category if best_score > 0 else "General"
 
 
+@retry_openai_call
+def _invoke_classifier(structured_llm, prompt: str) -> "CategoryDecision":
+    """Retried a few times before _llm_classify_category gives up and
+    falls back to the keyword classifier below — a transient blip
+    shouldn't cost classification quality when retrying would have
+    succeeded. See retry_utils.py."""
+    return structured_llm.invoke(prompt)
+
+
 def _llm_classify_category(text: str, llm=None) -> Optional[str]:
     """Zero-shot LLM classification — the fix for the keyword classifier's
     real-world vocabulary gap (see _CATEGORY_KEYWORDS' docstring above).
@@ -103,7 +114,8 @@ def _llm_classify_category(text: str, llm=None) -> Optional[str]:
     try:
         llm = llm or ChatOpenAI(model=_CLASSIFIER_MODEL, temperature=0)
         structured_llm = llm.with_structured_output(CategoryDecision)
-        decision = structured_llm.invoke(
+        decision = _invoke_classifier(
+            structured_llm,
             f"Categories: {CATEGORIES}\n\n"
             f"Document excerpt:\n{text[:_MAX_CHARS_FOR_CLASSIFICATION]}\n\n"
             f"Which single category best fits this content?"

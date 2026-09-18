@@ -20,6 +20,8 @@ from typing import List, Optional
 import numpy as np
 from langchain_openai import OpenAIEmbeddings
 
+from retry_utils import retry_openai_call
+
 from .schema import Document, DocumentMetadata
 
 MAX_TABLE_CHUNK_CHARS = 1500
@@ -48,6 +50,14 @@ def _cosine_distance(a: List[float], b: List[float]) -> float:
     return 1 - similarity
 
 
+@retry_openai_call
+def _embed_documents(embeddings, sentences: List[str]) -> List[List[float]]:
+    """A flaky OpenAI embedding call mid-ingestion shouldn't abort an
+    entire (potentially large) batch of files — retried a few times with
+    backoff before actually failing. See retry_utils.py."""
+    return embeddings.embed_documents(sentences)
+
+
 def semantic_split(
     text: str,
     embeddings,
@@ -62,7 +72,7 @@ def semantic_split(
     if len(sentences) <= 1:
         return [text] if text.strip() else []
 
-    vectors = embeddings.embed_documents(sentences)
+    vectors = _embed_documents(embeddings, sentences)
     distances = [_cosine_distance(vectors[i], vectors[i + 1]) for i in range(len(vectors) - 1)]
     threshold = np.percentile(distances, breakpoint_percentile)
 

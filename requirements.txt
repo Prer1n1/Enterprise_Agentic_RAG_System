@@ -24,3 +24,4 @@ google-api-python-client==2.194.0
 google-auth==2.49.1
 google-auth-httplib2==0.3.1
 python-json-logger==4.2.0
+tenacity==9.1.4

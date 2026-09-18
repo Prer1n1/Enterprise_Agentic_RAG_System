@@ -13,6 +13,7 @@ from langgraph.types import Send
 from agent.planner import plan_categories
 from agent.state import AgentState
 from retrieval.hybrid_retriever import HybridRetriever, RetrievedChunk
+from retry_utils import retry_openai_call
 
 _SYNTHESIS_MODEL = "gpt-4o-mini"
 
@@ -62,6 +63,15 @@ def _format_context(chunks: List[RetrievedChunk]) -> str:
     return "\n\n".join(lines)
 
 
+@retry_openai_call
+def _invoke_synthesis(llm, prompt: str):
+    """Unlike plan_categories/classify_category, this has no fallback to
+    degrade to — a failed synthesis call IS the failed request. Retrying a
+    transient blip here is what stands between a brief network hiccup and
+    a real user-facing 500. See retry_utils.py."""
+    return llm.invoke(prompt)
+
+
 def synthesize_node(state: AgentState) -> dict:
     chunks = state["retrieved_chunks"]
     if not chunks:
@@ -81,7 +91,7 @@ def synthesize_node(state: AgentState) -> dict:
 
     context = _format_context(unique_chunks)
     llm = ChatOpenAI(model=_SYNTHESIS_MODEL, temperature=0)
-    response = llm.invoke(_SYNTHESIS_PROMPT.format(context=context, query=state["query"]))
+    response = _invoke_synthesis(llm, _SYNTHESIS_PROMPT.format(context=context, query=state["query"]))
 
     citations = [
         {

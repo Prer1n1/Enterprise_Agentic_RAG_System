@@ -24,6 +24,10 @@ class IngestionResult:
     ingested_files: List[str] = field(default_factory=list)
     skipped_unchanged: List[str] = field(default_factory=list)
     deleted_files: List[str] = field(default_factory=list)
+    # Real Path objects (tracker.mark_ingested() needs to reopen the file to
+    # hash it), NOT yet marked in the tracker — see the note on
+    # ingest_directory() below for why marking is the CALLER's job now.
+    pending_mark: List[Path] = field(default_factory=list)
 
 
 def ingest_directory(
@@ -65,11 +69,21 @@ def ingest_directory(
     if docs_to_chunk:
         result.chunks = chunk_documents(docs_to_chunk, embeddings=embeddings)
 
-    # Only mark as ingested AFTER chunking succeeds for all of them —
-    # if chunk_documents() raised, nothing here runs and the tracker still
-    # reports these files as needing ingestion on the next run.
+    # NOT marked here anymore — see the SEVERE bug this fixed in
+    # docs/design-decisions.md ("Reliability / Data Integrity"). Marking
+    # a file "ingested" the moment chunking succeeds, before its chunks
+    # are actually saved to chunk_store/vector_store, meant a crash or a
+    # failed save between here and persistence would leave the tracker
+    # believing a file was ingested when its chunks were never actually
+    # stored anywhere — silently and permanently, since the next run's
+    # tracker.check() would report it "unchanged" and skip it forever.
+    #
+    # The caller (main.py / api/app.py) now calls tracker.mark_ingested()
+    # itself, ONLY after chunk_store.save_chunks() and vector_store's
+    # add_chunks() have BOTH actually succeeded — that's the real
+    # definition of "ingested," not "chunked."
     for file_path in files_pending_mark:
-        tracker.mark_ingested(file_path)
+        result.pending_mark.append(file_path)
         # MUST match the canonical_source() used in Document.metadata.source
         # (set by the loaders) — main.py/api.py call delete_by_source() on
         # these entries before persisting new chunks, and that only finds

@@ -14,6 +14,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from ingestion.metadata_extractor import CATEGORIES
+from retry_utils import retry_openai_call
 
 _PLANNER_MODEL = "gpt-4o-mini"
 
@@ -29,6 +30,14 @@ class RoutingDecision(BaseModel):
     )
 
 
+@retry_openai_call
+def _invoke_router(structured_llm, prompt: str) -> RoutingDecision:
+    """Retried a few times before plan_categories gives up and falls back
+    to 'search every category' — a transient blip shouldn't cost routing
+    precision when retrying would have succeeded. See retry_utils.py."""
+    return structured_llm.invoke(prompt)
+
+
 def plan_categories(query: str) -> List[str]:
     """Returns the categories to query. Falls back to querying ALL known
     categories if the LLM call fails or returns something unusable — a
@@ -37,7 +46,8 @@ def plan_categories(query: str) -> List[str]:
     try:
         llm = ChatOpenAI(model=_PLANNER_MODEL, temperature=0)
         structured_llm = llm.with_structured_output(RoutingDecision)
-        decision = structured_llm.invoke(
+        decision = _invoke_router(
+            structured_llm,
             f"User query: {query}\n\n"
             f"Which knowledge source categories should be searched to answer this?"
         )

@@ -23,6 +23,7 @@ from config import (
     OPENAI_API_KEY,
 )
 from ingestion.pipeline import IngestionResult, ingest_directory
+from ingestion.tracker import IngestionTracker
 from retrieval.hybrid_retriever import HybridRetriever
 from storage.chunk_store import ChunkStore
 from storage.vector_store import add_chunks, delete_by_source, get_vector_store
@@ -41,7 +42,8 @@ def _ingest_and_persist(directory: Path, chunk_store: ChunkStore, vector_store, 
     this directory and persist the result,' so the delete-then-insert
     correctness logic (and the API's identical version of it) all trace
     back to the same reasoning, not three copies that could drift apart."""
-    result = ingest_directory(directory, embeddings=embeddings)
+    tracker = IngestionTracker()
+    result = ingest_directory(directory, tracker=tracker, embeddings=embeddings)
 
     # A re-ingested (changed) file may now produce a different number/shape
     # of chunks than before — delete its OLD chunks first so nothing stale
@@ -57,6 +59,13 @@ def _ingest_and_persist(directory: Path, chunk_store: ChunkStore, vector_store, 
     for deleted_source in result.deleted_files:
         chunk_store.delete_by_source(deleted_source)
         delete_by_source(vector_store, deleted_source)
+
+    # Marked ingested ONLY now — after chunk_store AND vector_store have
+    # both actually persisted the new chunks, not right after chunking
+    # succeeded. See ingest_directory()'s docstring in ingestion/pipeline.py
+    # for the real bug this ordering fixes.
+    for file_path in result.pending_mark:
+        tracker.mark_ingested(file_path)
 
     return result
 

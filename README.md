@@ -120,7 +120,7 @@ python test_agent.py
 
 ## Status
 
-Built so far: Ingestion & Processing, Storage, Retrieval, Agent Orchestration (LangGraph), Evaluation & Observability (RAGAS, hallucination detection, LangSmith tracing), API Layer (FastAPI) with API-key authentication and structured JSON logging, Docker packaging.
-Not yet built: CI, request retry logic.
+Built so far: Ingestion & Processing, Storage, Retrieval, Agent Orchestration (LangGraph), Evaluation & Observability (RAGAS, hallucination detection, LangSmith tracing), API Layer (FastAPI) with API-key authentication and structured JSON logging, Reliability (retry logic for transient OpenAI failures, a fixed data-integrity bug in the ingestion tracker), Docker packaging.
+Not yet built: CI.
 
 This is a tested prototype demonstrating the full Agentic RAG architecture end-to-end — not a hardened production deployment. See the "Evaluation & Observability" and earlier sections of [docs/design-decisions.md](docs/design-decisions.md) for what's still missing before it would be.

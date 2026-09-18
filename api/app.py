@@ -39,6 +39,7 @@ from config import (
     OPENAI_API_KEY,
 )
 from ingestion.pipeline import SUPPORTED_EXTENSIONS, IngestionResult, ingest_directory
+from ingestion.tracker import IngestionTracker
 from logging_config import configure_logging
 from retrieval.hybrid_retriever import HybridRetriever
 from storage.chunk_store import ChunkStore
@@ -140,9 +141,10 @@ def _ingest_and_persist(directory: Path) -> IngestionResult:
     correctness logic lives in exactly one place instead of two copies
     that could drift apart."""
     logger.info("ingestion_begin", extra={"directory": str(directory)})
+    tracker = IngestionTracker()
     with _state_lock:
         state: AppState = app.state.rag
-        result = ingest_directory(directory, embeddings=state.embeddings)
+        result = ingest_directory(directory, tracker=tracker, embeddings=state.embeddings)
 
         # Same delete-then-insert correctness rule as main.py's CLI: a
         # changed file can produce a different chunk shape than before,
@@ -158,6 +160,14 @@ def _ingest_and_persist(directory: Path) -> IngestionResult:
         for deleted_source in result.deleted_files:
             state.chunk_store.delete_by_source(deleted_source)
             delete_by_source(state.vector_store, deleted_source)
+
+        # Marked ingested ONLY now — after both stores have actually
+        # persisted the new chunks, not right after chunking succeeded.
+        # See ingest_directory()'s docstring in ingestion/pipeline.py for
+        # the real bug (a tracker that could lie about what's actually
+        # persisted) this ordering fixes.
+        for file_path in result.pending_mark:
+            tracker.mark_ingested(file_path)
 
         if result.ingested_files or result.deleted_files:
             state.rebuild_retriever()
