@@ -28,6 +28,18 @@ class QueryResponse(BaseModel):
         default=False,
         description="True if the caller's API key scope narrowed which knowledge-source categories could be searched for this query.",
     )
+    off_topic: bool = Field(
+        default=False,
+        description="True if the router judged this query unrelated to any company knowledge domain — a topic/scope guardrail short-circuit, not a corpus gap.",
+    )
+    faithfulness_score: Optional[float] = Field(
+        default=None,
+        description="RAGAS Faithfulness score (0-1) for this answer against its retrieved context. None if there was no context to score against (e.g. off-topic or access-restricted queries).",
+    )
+    hallucination_risk: bool = Field(
+        default=False,
+        description="True if faithfulness_score fell below the hallucination threshold — a live guardrail flag, not a guarantee either way.",
+    )
 
 
 class IngestRequest(BaseModel):

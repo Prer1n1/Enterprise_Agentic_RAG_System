@@ -31,12 +31,8 @@ from ragas.metrics import Faithfulness, LLMContextPrecisionWithoutReference, Res
 from agent.graph import build_agent_graph
 from config import EMBEDDING_MODEL
 from evaluation.eval_dataset import EVAL_CASES
+from hallucination_guardrail import HALLUCINATION_THRESHOLD
 from retrieval.hybrid_retriever import HybridRetriever
-
-# Below this faithfulness score, flag the answer as a likely hallucination.
-# 0.7 tolerates minor phrasing looseness but catches answers where a
-# meaningful fraction of claims aren't grounded in the retrieved context.
-HALLUCINATION_THRESHOLD = 0.7
 
 
 @dataclass

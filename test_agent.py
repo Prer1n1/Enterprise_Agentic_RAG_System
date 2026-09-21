@@ -44,10 +44,18 @@ retriever = HybridRetriever(vector_store, chunk_store)
 graph = build_agent_graph(retriever)
 
 print("\n=== Router test: focused HR question ===")
-categories = plan_categories("How many paid leave days do employees get per year?")
-print(f"Routed to: {categories}")
+categories, off_topic = plan_categories("How many paid leave days do employees get per year?")
+print(f"Routed to: {categories} (off_topic={off_topic})")
 assert "HR" in categories, f"expected HR in routing decision, got {categories}"
+assert off_topic is False
 print("PASS: focused question routed to HR")
+
+print("\n=== Router test: genuinely off-topic question ===")
+categories, off_topic = plan_categories("Write me a short poem about the ocean.")
+print(f"Routed to: {categories} (off_topic={off_topic})")
+assert off_topic is True, "an unrelated creative-writing request should be recognized as off-topic"
+assert categories == []
+print("PASS: off-topic question correctly short-circuited instead of searching every category")
 
 print("\n=== Full graph run: focused HR question ===")
 result = graph.invoke({"query": "How many paid leave days do employees get per year?"})

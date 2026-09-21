@@ -5,7 +5,7 @@ with citations).
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Union
 
 from langchain_openai import ChatOpenAI
 from langgraph.types import Send
@@ -41,21 +41,39 @@ def plan_node(state: AgentState) -> dict:
     questions, and this narrows the former by the latter. allowed_categories
     is None for the admin key and for CLI usage (main.py never sets it),
     meaning no restriction at all."""
-    categories = plan_categories(state["query"])
+    categories, off_topic = plan_categories(state["query"])
+    if off_topic:
+        # Topic/scope guardrail: don't bother filtering-by-access or
+        # fanning out any retrieve_node branches for a query the router
+        # itself judged unrelated to any company knowledge domain.
+        return {"categories": [], "access_restricted": False, "off_topic": True}
+
     allowed = state.get("allowed_categories")
     if allowed is None:
-        return {"categories": categories, "access_restricted": False}
+        return {"categories": categories, "access_restricted": False, "off_topic": False}
 
     filtered = [c for c in categories if c in allowed]
-    return {"categories": filtered, "access_restricted": filtered != categories}
+    return {"categories": filtered, "access_restricted": filtered != categories, "off_topic": False}
 
 
-def route_to_sources(state: AgentState) -> List[Send]:
+def route_to_sources(state: AgentState) -> Union[str, List[Send]]:
     """Conditional edge: fans out to one retrieve_node execution PER
     category, IN PARALLEL. This is the literal implementation of
     "querying multiple knowledge sources before synthesizing" — not one
     filtered search, but genuinely separate retrieval calls per source
-    that LangGraph runs concurrently and merges back together."""
+    that LangGraph runs concurrently and merges back together.
+
+    Real bug fixed here: an empty categories list (off-topic query, or an
+    access-scoped query with zero category overlap) used to return an
+    empty Send list — a graph DEAD END, since retrieve_node never ran and
+    neither did synthesize_node (only reachable via retrieve_node's
+    outgoing edge). The final state was then missing "answer"/"citations"
+    entirely, surfacing as a live KeyError, not a graceful response. Now
+    routes straight to synthesize_node instead, which already handles an
+    empty retrieved_chunks list gracefully (see its off_topic/
+    access_restricted messaging)."""
+    if not state["categories"]:
+        return "synthesize_node"
     return [
         Send("retrieve_node", {"query": state["query"], "category": category})
         for category in state["categories"]
@@ -94,7 +112,16 @@ def _invoke_synthesis(llm, prompt: str):
 def synthesize_node(state: AgentState) -> dict:
     chunks = state["retrieved_chunks"]
     if not chunks:
-        if state.get("access_restricted"):
+        if state.get("off_topic"):
+            # Topic/scope guardrail: honest about WHY there's no answer —
+            # not "we searched and found nothing," but "this isn't what
+            # this tool is for."
+            answer = (
+                "This question doesn't appear to relate to any of our knowledge domains "
+                "(HR, Finance, Security, IT, or Legal) — this tool answers questions "
+                "grounded in company policy documents, not general questions."
+            )
+        elif state.get("access_restricted"):
             # Distinct from "nothing relevant exists" — the honest answer
             # here is "you're not allowed to see it," not a message that
             # reads like the corpus itself has no relevant content.

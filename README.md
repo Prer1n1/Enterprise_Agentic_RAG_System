@@ -21,14 +21,15 @@ Documents (PDF/DOCX/HTML/CSV)
    [Retrieval]  hybrid: dense (Chroma) + sparse (BM25) fused with Reciprocal Rank Fusion
                 -> reranked by Cohere Rerank for precision (optional, falls back to RRF order)
         |
-   [Agent]      LangGraph: plan (route to sources) -> parallel retrieve per source -> synthesize (grounded + cited)
+   [Agent]      LangGraph: plan (route to sources, off-topic short-circuit) -> parallel retrieve per source
+                -> synthesize (grounded + cited) -> live hallucination check (RAGAS Faithfulness)
         |
-   [Evaluation] RAGAS: faithfulness (= hallucination detection), answer relevancy, context precision
+   [Evaluation] RAGAS: faithfulness (= hallucination detection, offline AND live), answer relevancy, context precision
                 LangSmith tracing (auto-instruments every LLM call, config-only)
         |
    [API]        FastAPI: GET /health, POST /ingest, POST /documents/upload, POST /ingest/drive, POST /query
-                (/query rejects prompt injection attempts with 400 before reaching the agent;
-                 API keys can be scoped to specific categories + ingest permission)
+                (rate-limited per API key; /query rejects prompt injection attempts with 400 before
+                 reaching the agent; API keys can be scoped to specific categories + ingest permission)
 ```
 
 This project is classified as **Agentic RAG**: an agent decides which knowledge sources to query rather than always searching everything. See the design log for where it sits relative to Naive/Advanced/Modular/Adaptive-Self-Reflective RAG.
@@ -108,6 +109,34 @@ A key not listed there (and not the admin `API_KEY`) gets `401`. A listed key ca
 
 Re-running `ingest` is incremental — unchanged files are skipped (content-hash based), and only new/changed files are re-processed.
 
+## Guardrails
+
+| Guardrail | What it does | Where |
+|---|---|---|
+| **Prompt injection defense** | Structural prompt framing (always on) + LLM detector. Documents: fail-closed, blocked from ingestion. Queries: rejected with `400`. | `prompt_injection.py` |
+| **PII redaction** | SSN/credit card/bank account/email/phone/DOB/salary scrubbed before chunking/embedding/storage. Fail-closed on detector failure. | `pii_redaction.py` |
+| **Access control** | Per-API-key category scoping (read) + ingest permission (write). | `access_control.py` |
+| **Topic/scope guardrail** | Router explicitly judges on-topic vs. off-topic; off-topic queries short-circuit instead of running a full (pointless) retrieval pass. | `agent/planner.py`, `agent/nodes.py` |
+| **Live hallucination guardrail** | RAGAS Faithfulness scored on every live answer, flagged if below threshold (`hallucination_risk`, `faithfulness_score` in the response). Detection only — see design log for the "honest non-answer can still score low" nuance this surfaced. | `hallucination_guardrail.py` |
+| **Rate limiting** | Per-API-key limits (`slowapi`): 20/min on `/query`, 10/min on ingestion routes. `/health` unlimited. | `api/app.py` |
+
+**Considered and deliberately not implemented**: content moderation / output toxicity filtering — assessed as low-value for this project's actual threat model (an internal tool, answers grounded only in retrieved corporate documents, not open-ended public-facing generation). See `docs/design-decisions.md` ("Guardrails — completing the set") for the full reasoning, including a real bug the topic/scope guardrail's rollout surfaced and fixed (a LangGraph dead-end on an empty category list).
+
+## Evaluation
+
+RAGAS-scored against the curated eval set (`evaluation/eval_dataset.py`), run for real against the live persisted corpus (`python main.py evaluate`). Snapshot from 2026-09-19:
+
+| Question | Faithfulness | Answer Relevancy | Context Precision |
+|---|---|---|---|
+| How many paid leave days do employees get per year? | 1.00 | 0.92 | 1.00 |
+| How often must passwords be rotated? | 1.00 | 0.98 | 1.00 |
+| How quickly must security incidents be reported? | 1.00 | 0.82 | 1.00 |
+| What is the expense approval threshold? | 1.00 | 1.00 | 1.00 |
+| How long does it take to get a laptop as a new employee? | 1.00 | 0.81 | 1.00 |
+| **Average** | **1.00** | **0.90** | **1.00** |
+
+0 of 5 questions flagged as a likely hallucination (`HALLUCINATION_THRESHOLD = 0.7`). Re-run this yourself with `python main.py evaluate` — results will vary with corpus contents and model versions; these numbers are a real snapshot, not a fixed claim. See `docs/design-decisions.md` for what each metric means and the real dependency-conflict bug hit (and fixed) while first setting up RAGAS.
+
 ### Running it with Docker
 
 ```bash
@@ -131,7 +160,7 @@ docs/         design-decisions.md — the full reasoning log
 
 ## Testing
 
-Each component has a standalone `test_*.py` script at the project root (no pytest framework yet — these are direct sanity checks with assertions, runnable individually). The first 10 use fake embeddings / the keyword classifier fallback / monkeypatching / fake LLM doubles and need no API key; the last 2 make real OpenAI calls:
+Each component has a standalone `test_*.py` script at the project root (no pytest framework yet — these are direct sanity checks with assertions, runnable individually). The first 11 use fake embeddings / the keyword classifier fallback / monkeypatching / fake LLM doubles and need no API key; the last 2 make real OpenAI calls:
 
 ```bash
 # free / offline — no API key needed
@@ -145,6 +174,7 @@ python test_reranker.py            # also gains a real Cohere call if COHERE_API
 python test_prompt_injection.py    # also gains real LLM detector calls if OPENAI_API_KEY is set
 python test_access_control.py
 python test_pii_redaction.py       # also gains a real LLM redaction call if OPENAI_API_KEY is set
+python test_guardrails.py          # also gains real RAGAS scoring calls if OPENAI_API_KEY is set
 
 # live — real OpenAI calls, needs OPENAI_API_KEY in .env
 python test_retrieval.py
@@ -155,6 +185,6 @@ CI (`.github/workflows/tests.yml`) runs the free suite on every push and PR auto
 
 ## Status
 
-Built so far: Ingestion & Processing (with prompt injection detection and PII redaction — malicious documents are blocked, sensitive PII is scrubbed before storage, both fail closed on detector failure), Storage, Retrieval (hybrid + Cohere reranking), Agent Orchestration (LangGraph), Evaluation & Observability (RAGAS, hallucination detection, LangSmith tracing), API Layer (FastAPI) with API-key authentication, role-based access control (per-key category + ingest scoping), structured JSON logging, and query-level prompt injection defense, Reliability (retry logic for transient OpenAI/Cohere failures, a fixed data-integrity bug in the ingestion tracker), Docker packaging, CI (GitHub Actions).
+Built so far: Ingestion & Processing (with prompt injection detection and PII redaction — malicious documents are blocked, sensitive PII is scrubbed before storage, both fail closed on detector failure), Storage, Retrieval (hybrid + Cohere reranking), Agent Orchestration (LangGraph, with a topic/scope guardrail and a live hallucination guardrail), Evaluation & Observability (RAGAS, hallucination detection — offline AND live, LangSmith tracing), API Layer (FastAPI) with API-key authentication, role-based access control (per-key category + ingest scoping), structured JSON logging, query-level prompt injection defense, and per-key rate limiting, Reliability (retry logic for transient OpenAI/Cohere failures, a fixed data-integrity bug in the ingestion tracker), Docker packaging, CI (GitHub Actions).
 
 This is a tested prototype demonstrating the full Agentic RAG architecture end-to-end — not a hardened production deployment. See [docs/design-decisions.md](docs/design-decisions.md) for the reasoning behind every choice and what's still out of scope.

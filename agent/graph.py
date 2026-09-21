@@ -25,7 +25,15 @@ def build_agent_graph(retriever: HybridRetriever):
     graph.add_node("synthesize_node", synthesize_node)
 
     graph.add_edge(START, "plan_node")
-    graph.add_conditional_edges("plan_node", route_to_sources, ["retrieve_node"])
+    # "synthesize_node" is a valid target here too, not just "retrieve_node"
+    # — route_to_sources routes straight there when categories is empty
+    # (an off-topic query, or an access-scoped query with zero category
+    # overlap). Real bug this fixed: with only "retrieve_node" listed,
+    # an empty Send list was a graph dead end — retrieve_node never ran,
+    # so synthesize_node never ran either, and the final state was
+    # missing "answer"/"citations" entirely (a live KeyError on
+    # result["answer"], not a graceful "nothing found" response).
+    graph.add_conditional_edges("plan_node", route_to_sources, ["retrieve_node", "synthesize_node"])
     graph.add_edge("retrieve_node", "synthesize_node")
     graph.add_edge("synthesize_node", END)
 

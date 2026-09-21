@@ -21,6 +21,11 @@ class AgentState(TypedDict):
     # allowed_categories — lets synthesize_node tell "access-restricted"
     # apart from "genuinely nothing relevant in the corpus."
     access_restricted: bool
+    # True if the router judged the query unrelated to any company
+    # knowledge domain (a topic/scope guardrail) — lets synthesize_node
+    # short-circuit with an honest "not what this tool is for" message
+    # instead of running a full (and pointless) retrieval pass.
+    off_topic: bool
     # Annotated with operator.add: when multiple retrieve_node branches run
     # in PARALLEL (one per category), LangGraph needs to know to CONCATENATE
     # their results into this list, not have the last branch silently

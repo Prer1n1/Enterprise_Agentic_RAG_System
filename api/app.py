@@ -18,8 +18,11 @@ import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from langchain_openai import OpenAIEmbeddings
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from access_control import ALL_CATEGORIES, KeyScope
 from agent.graph import build_agent_graph
@@ -39,6 +42,7 @@ from config import (
     GOOGLE_DRIVE_FOLDER_ID,
     OPENAI_API_KEY,
 )
+from hallucination_guardrail import is_likely_hallucination, score_faithfulness
 from ingestion.pipeline import SUPPORTED_EXTENSIONS, IngestionResult, ingest_directory
 from ingestion.tracker import IngestionTracker
 from logging_config import configure_logging
@@ -55,6 +59,20 @@ logger = logging.getLogger(__name__)
 
 UPLOAD_DIR = Path("uploads")
 DRIVE_CACHE_DIR = Path("storage") / "drive_cache"
+
+
+def _rate_limit_key(request: Request) -> str:
+    """Rate-limit per API key, not per client IP — several callers can
+    legitimately sit behind one shared corporate NAT/proxy, and limiting
+    by IP would throttle all of them together as if they were one caller.
+    Falls back to remote address only for the rare unauthenticated
+    request (which require_api_key rejects anyway before it could do
+    anything expensive — this only matters for the rate-limit bookkeeping
+    itself, not for anything /health-related, which isn't rate-limited)."""
+    return request.headers.get("X-API-Key") or get_remote_address(request)
+
+
+limiter = Limiter(key_func=_rate_limit_key)
 
 
 class AppState:
@@ -102,6 +120,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Enterprise Agentic RAG Platform", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -215,9 +235,10 @@ def _require_ingest_permission(scope: KeyScope) -> None:
 
 
 @app.post("/ingest", response_model=IngestResponse)
-def ingest(request: IngestRequest, scope: KeyScope = Depends(require_api_key)) -> IngestResponse:
+@limiter.limit("10/minute")
+def ingest(request: Request, body: IngestRequest, scope: KeyScope = Depends(require_api_key)) -> IngestResponse:
     _require_ingest_permission(scope)
-    directory = Path(request.directory)
+    directory = Path(body.directory)
     if not directory.exists():
         raise HTTPException(status_code=400, detail=f"Directory not found: {directory}")
 
@@ -226,7 +247,10 @@ def ingest(request: IngestRequest, scope: KeyScope = Depends(require_api_key)) -
 
 
 @app.post("/documents/upload", response_model=IngestResponse)
-def upload_document(file: UploadFile = File(...), scope: KeyScope = Depends(require_api_key)) -> IngestResponse:
+@limiter.limit("10/minute")
+def upload_document(
+    request: Request, file: UploadFile = File(...), scope: KeyScope = Depends(require_api_key)
+) -> IngestResponse:
     """Lets a document get into the platform over HTTP, instead of
     requiring filesystem/SSH access to wherever the app happens to be
     running — the same reason a real deployment can't rely on /ingest's
@@ -260,7 +284,8 @@ def upload_document(file: UploadFile = File(...), scope: KeyScope = Depends(requ
 
 
 @app.post("/ingest/drive", response_model=IngestResponse)
-def ingest_drive(scope: KeyScope = Depends(require_api_key)) -> IngestResponse:
+@limiter.limit("10/minute")
+def ingest_drive(request: Request, scope: KeyScope = Depends(require_api_key)) -> IngestResponse:
     """Syncs the configured Google Drive folder into a local cache, then
     reuses the identical ingest_directory() path as everything else —
     the connector's only job is making Drive content look like local
@@ -283,22 +308,23 @@ def ingest_drive(scope: KeyScope = Depends(require_api_key)) -> IngestResponse:
 
 
 @app.post("/query", response_model=QueryResponse)
-def query(request: QueryRequest, scope: KeyScope = Depends(require_api_key)) -> QueryResponse:
+@limiter.limit("20/minute")
+def query(request: Request, body: QueryRequest, scope: KeyScope = Depends(require_api_key)) -> QueryResponse:
     with _state_lock:
         graph = app.state.rag.graph  # brief hold just to read a consistent reference
 
     # question_preview, not the full question: keeps log lines short and
     # scannable without truncating anything that actually matters for
     # debugging (the routed categories + citation sources below cover that).
-    logger.info("query_received", extra={"question_preview": request.question[:80], "role": scope.role})
+    logger.info("query_received", extra={"question_preview": body.question[:80], "role": scope.role})
 
     # Direct prompt injection check — a user could try to jailbreak the
     # agent straight through the question text, not just via a malicious
     # ingested document (indirect injection, checked at ingestion time
     # instead). Rejected before it ever reaches the agent graph — fail
     # closed, same policy as ingestion. See prompt_injection.py.
-    if detect_injection(request.question):
-        logger.warning("query_blocked_injection", extra={"question_preview": request.question[:80]})
+    if detect_injection(body.question):
+        logger.warning("query_blocked_injection", extra={"question_preview": body.question[:80]})
         raise HTTPException(status_code=400, detail="Query rejected: looks like a prompt injection attempt")
 
     # Access control: None means unrestricted (the admin key) — the router
@@ -308,7 +334,7 @@ def query(request: QueryRequest, scope: KeyScope = Depends(require_api_key)) -> 
     allowed_categories = None if ALL_CATEGORIES in scope.categories else scope.categories
 
     try:
-        result = graph.invoke({"query": request.question, "allowed_categories": allowed_categories})
+        result = graph.invoke({"query": body.question, "allowed_categories": allowed_categories})
     except Exception:
         # logger.exception (not logger.error) captures the full traceback in
         # the structured log — the client only ever sees a generic 500, but
@@ -317,12 +343,29 @@ def query(request: QueryRequest, scope: KeyScope = Depends(require_api_key)) -> 
         logger.exception("query_failed")
         raise HTTPException(status_code=500, detail="Agent execution failed") from None
 
+    # Live hallucination guardrail: scores THIS answer's groundedness
+    # against the context it was actually synthesized from. Detection
+    # only (flags the response), doesn't retry/regenerate — see
+    # hallucination_guardrail.py for the reasoning and the cost tradeoff
+    # (one extra LLM call per query).
+    contexts = [c.content for c in result["retrieved_chunks"]]
+    faithfulness_score = score_faithfulness(body.question, result["answer"], contexts)
+    hallucination_risk = is_likely_hallucination(faithfulness_score)
+    if hallucination_risk:
+        logger.warning(
+            "hallucination_risk_flagged",
+            extra={"question_preview": body.question[:80], "faithfulness_score": faithfulness_score},
+        )
+
     logger.info(
         "query_answered",
         extra={
             "categories_queried": result["categories"],
             "citation_count": len(result["citations"]),
             "access_restricted": result.get("access_restricted", False),
+            "off_topic": result.get("off_topic", False),
+            "faithfulness_score": faithfulness_score,
+            "hallucination_risk": hallucination_risk,
         },
     )
     return QueryResponse(
@@ -333,4 +376,7 @@ def query(request: QueryRequest, scope: KeyScope = Depends(require_api_key)) -> 
             for c in result["citations"]
         ],
         access_restricted=result.get("access_restricted", False),
+        off_topic=result.get("off_topic", False),
+        faithfulness_score=faithfulness_score,
+        hallucination_risk=hallucination_risk,
     )

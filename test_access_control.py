@@ -68,32 +68,36 @@ print("\n=== plan_node: allowed_categories=None means no restriction ===")
 import agent.nodes as nodes_module
 
 original_plan_categories = nodes_module.plan_categories
-nodes_module.plan_categories = lambda query: ["HR", "Finance"]
+nodes_module.plan_categories = lambda query: (["HR", "Finance"], False)
 try:
     result = plan_node({"query": "test", "allowed_categories": None})
-    assert result == {"categories": ["HR", "Finance"], "access_restricted": False}
+    assert result == {"categories": ["HR", "Finance"], "access_restricted": False, "off_topic": False}
     print("PASS: no allowed_categories -> router's decision passes through unchanged")
 
     print("\n=== plan_node: allowed_categories narrows the router's decision ===")
     result = plan_node({"query": "test", "allowed_categories": ["HR", "General"]})
-    assert result == {"categories": ["HR"], "access_restricted": True}
+    assert result == {"categories": ["HR"], "access_restricted": True, "off_topic": False}
     print("PASS: Finance dropped (not in allowed_categories), access_restricted=True")
 
     print("\n=== plan_node: allowed_categories that already covers everything requested ===")
     result = plan_node({"query": "test", "allowed_categories": ["HR", "Finance", "General"]})
-    assert result == {"categories": ["HR", "Finance"], "access_restricted": False}
+    assert result == {"categories": ["HR", "Finance"], "access_restricted": False, "off_topic": False}
     print("PASS: nothing actually filtered out -> access_restricted=False")
 finally:
     nodes_module.plan_categories = original_plan_categories
 
 print("\n=== synthesize_node: distinguishes access-denied from genuinely-empty ===")
-result = synthesize_node({"retrieved_chunks": [], "access_restricted": True, "query": "x"})
+result = synthesize_node({"retrieved_chunks": [], "access_restricted": True, "off_topic": False, "query": "x"})
 assert "doesn't have access" in result["answer"]
 print(f"PASS: access_restricted=True -> {result['answer']!r}")
 
-result = synthesize_node({"retrieved_chunks": [], "access_restricted": False, "query": "x"})
+result = synthesize_node({"retrieved_chunks": [], "access_restricted": False, "off_topic": False, "query": "x"})
 assert "couldn't find anything" in result["answer"]
 print(f"PASS: access_restricted=False -> {result['answer']!r}")
+
+result = synthesize_node({"retrieved_chunks": [], "access_restricted": False, "off_topic": True, "query": "x"})
+assert "doesn't appear to relate" in result["answer"]
+print(f"PASS: off_topic=True -> {result['answer']!r}")
 
 import shutil
 

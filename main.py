@@ -22,6 +22,7 @@ from config import (
     GOOGLE_DRIVE_FOLDER_ID,
     OPENAI_API_KEY,
 )
+from hallucination_guardrail import is_likely_hallucination, score_faithfulness
 from ingestion.pipeline import IngestionResult, ingest_directory
 from ingestion.tracker import IngestionTracker
 from retrieval.hybrid_retriever import HybridRetriever
@@ -128,10 +129,22 @@ def _build_agent():
 
 def _print_answer(result: dict) -> None:
     print(f"\nCategories queried: {result['categories']}")
+    if result.get("off_topic"):
+        print("(topic guardrail: judged unrelated to any company knowledge domain)")
+    if result.get("access_restricted"):
+        print("(access guardrail: your key's scope narrowed the categories searched)")
     print(f"\nAnswer:\n{result['answer']}")
     print("\nCitations:")
     for c in result["citations"]:
         print(f"  - {Path(c['source']).name} ({c['section'] or 'n/a'}) [{c['category']}]")
+
+    # Live hallucination guardrail — same RAGAS Faithfulness check the API
+    # runs on every /query. See hallucination_guardrail.py.
+    contexts = [c.content for c in result["retrieved_chunks"]]
+    score = score_faithfulness(result["query"], result["answer"], contexts)
+    if score is not None:
+        flag = " — LIKELY HALLUCINATION" if is_likely_hallucination(score) else ""
+        print(f"\nFaithfulness: {score:.2f}{flag}")
 
 
 def cmd_ask(args: argparse.Namespace) -> None:
