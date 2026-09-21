@@ -124,18 +124,47 @@ Re-running `ingest` is incremental — unchanged files are skipped (content-hash
 
 ## Evaluation
 
-RAGAS-scored against the curated eval set (`evaluation/eval_dataset.py`), run for real against the live persisted corpus (`python main.py evaluate`). Snapshot from 2026-09-19:
+Scored **per pipeline stage** (router → retrieval → reranking → generation), not just the final answer — `python main.py evaluate` runs the curated eval set (`evaluation/eval_dataset.py`) against the live persisted corpus and reports real metrics at each stage, using RAGAS's own metric classes wherever one exists. Snapshot from 2026-09-21:
 
-| Question | Faithfulness | Answer Relevancy | Context Precision |
-|---|---|---|---|
-| How many paid leave days do employees get per year? | 1.00 | 0.92 | 1.00 |
-| How often must passwords be rotated? | 1.00 | 0.98 | 1.00 |
-| How quickly must security incidents be reported? | 1.00 | 0.82 | 1.00 |
-| What is the expense approval threshold? | 1.00 | 1.00 | 1.00 |
-| How long does it take to get a laptop as a new employee? | 1.00 | 0.81 | 1.00 |
-| **Average** | **1.00** | **0.90** | **1.00** |
+**Router**
 
-0 of 5 questions flagged as a likely hallucination (`HALLUCINATION_THRESHOLD = 0.7`). Re-run this yourself with `python main.py evaluate` — results will vary with corpus contents and model versions; these numbers are a real snapshot, not a fixed claim. See `docs/design-decisions.md` for what each metric means and the real dependency-conflict bug hit (and fixed) while first setting up RAGAS.
+| Question | Routing |
+|---|---|
+| How many paid leave days do employees get per year? | OK |
+| How often must passwords be rotated? | OK |
+| How quickly must security incidents be reported? | OK |
+| What is the expense approval threshold? | OK |
+| How long does it take to get a laptop as a new employee? | OK |
+
+Routing accuracy: **100%** (5/5) — intersection-based (a routing decision only fails if it misses every expected category; see `evaluation/eval_dataset.py`).
+
+**Retrieval + Reranking**
+
+| Question | Context Precision | Context Recall | Precision w/ rerank | Precision w/o rerank |
+|---|---|---|---|---|
+| How many paid leave days...? | 1.00 | 1.00 | 1.00 | 0.83 |
+| How often must passwords be rotated? | 0.00 | 0.00 | 0.00 | 0.00 |
+| How quickly must security incidents...? | 1.00 | 1.00 | 1.00 | 1.00 |
+| What is the expense approval threshold? | 1.00 | 1.00 | 1.00 | 0.50 |
+| How long does it take to get a laptop...? | 1.00 | 1.00 | 1.00 | 1.00 |
+| **Average** | **0.80** | **0.80** | **0.80** | **0.67** |
+
+Real finding, not a clean pass across the board: the password-rotation question scored **0.00** on both precision and recall. Routing was still marked "OK" (it picked `Security`, one of the two acceptable categories), but `Security` alone doesn't contain the actual fact — that lives in an `IT`-tagged CSV row the router didn't select on this run. This is exactly the kind of gap a single end-to-end score would have hidden: routing "passed," but retrieval still failed, because intersection-based routing accuracy and actual answer retrievability are different questions. Reranking's real, measurable effect shows up on the other two rows where it mattered: precision recovers from 0.83→1.00 and 0.50→1.00 with reranking on — but reranking can't fix a category the router never retrieved from in the first place (the password-rotation row stays 0.00 either way).
+
+**Generation**
+
+| Question | Faithfulness | Relevancy | Correctness | Citations |
+|---|---|---|---|---|
+| How many paid leave days...? | 1.00 | 0.92 | 0.99 | OK |
+| How often must passwords be rotated? | 1.00 | 0.00 | 0.17 | **BAD REFS** |
+| How quickly must security incidents...? | 1.00 | 0.82 | 1.00 | OK |
+| What is the expense approval threshold? | 1.00 | 1.00 | 0.71 | OK |
+| How long does it take to get a laptop...? | 1.00 | 0.81 | 0.95 | OK |
+| **Average** | **1.00** | **0.71** | **0.76** | **80%** |
+
+The Citation Correctness check (a small structural check, not an LLM judgment — does every `[n]` marker in the answer actually reference a real citation?) caught a real, concrete generation bug on the same password-rotation question: the model cited a source number that didn't exist among what was actually retrieved. Faithfulness stayed a perfect 1.00 on that row — a reminder that groundedness alone doesn't catch every failure mode; a mechanical check caught something a semantic one didn't.
+
+0 of 5 questions flagged as a likely hallucination (`HALLUCINATION_THRESHOLD = 0.7`). Re-run this yourself with `python main.py evaluate` — results will vary with corpus contents and model versions; these numbers are a real snapshot, not a fixed claim. See `docs/design-decisions.md` ("Evaluation — per-pipeline-stage scoring") for what each metric means, which ones are real RAGAS classes vs. small custom checks (and why), and which stages were deliberately left unscored (tone, output safety, "completeness") with reasoning.
 
 ### Running it with Docker
 
