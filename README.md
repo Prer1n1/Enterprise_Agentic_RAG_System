@@ -166,6 +166,24 @@ The Citation Correctness check (a small structural check, not an LLM judgment �
 
 0 of 5 questions flagged as a likely hallucination (`HALLUCINATION_THRESHOLD = 0.7`). Re-run this yourself with `python main.py evaluate` — results will vary with corpus contents and model versions; these numbers are a real snapshot, not a fixed claim. See `docs/design-decisions.md` ("Evaluation — per-pipeline-stage scoring") for what each metric means, which ones are real RAGAS classes vs. small custom checks (and why), and which stages were deliberately left unscored (tone, output safety, "completeness") with reasoning.
 
+## Experimental: Jev classification pilot
+
+[TypeSafe AI's Jev](https://typesafe.ai) ("System One") is a non-autoregressive model — it answers typed Choice/Score/Noul questions against program state in a single pass instead of generating text, and is explicitly *not* a conversational LLM. That shape matches exactly one decision in this pipeline: `classify_category()` picking one document category from a fixed list at ingestion (`jev_classifier.py`, `ingestion/metadata_extractor.py`). It is **not** a fit for synthesis (Jev doesn't generate text) and was never considered for that step.
+
+Piloted, not swapped: `use_jev=True` is opt-in and defaults `False` everywhere. When enabled, it's a new top tier tried *ahead of* the existing LLM classifier — any failure or a low-confidence answer (`< 0.6`) falls straight through to the already-verified LLM → keyword chain, unchanged. Run the comparison yourself with `python -m evaluation.jev_classification_eval`.
+
+Real numbers, 6 hand-labeled excerpts (`evaluation/jev_classification_eval.py`), measured 2026-09-22:
+
+| Tier | Accuracy | Avg latency |
+|---|---|---|
+| Keyword (existing fallback) | 100% (6/6) | 0ms |
+| LLM — gpt-4o-mini (existing primary) | 83% (5/6) | 1112ms |
+| Jev (pilot) | *pending a real `TYPESAFE_API_KEY`* | — |
+
+Honest note on that LLM miss: a deliberately generic "office kitchen / parking passes" excerpt was correctly called `General` by the zero-cost keyword classifier but misclassified as `HR` by gpt-4o-mini — a real reminder that "LLM primary, keyword fallback" doesn't mean the LLM tier is strictly better on every input, just better on average across the vocabulary-generalization gap keywords can't cover (see `ingestion/metadata_extractor.py`'s own docstring on why the LLM tier was added in the first place).
+
+Access to Jev is currently waitlisted (`console.typesafe.ai`); the code path, fallback behavior, and offline test suite (`test_jev_classifier.py`) are fully built and verified against a mocked API, but the pilot's own accuracy/latency numbers are intentionally left unreported here rather than filled in with numbers that were never real — see `docs/design-decisions.md` ("Jev classification pilot") for the full reasoning behind scoping this to classification only.
+
 ### Running it with Docker
 
 ```bash

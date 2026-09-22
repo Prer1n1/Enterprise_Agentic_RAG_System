@@ -49,6 +49,7 @@ def ingest_directory(
     embeddings=None,
     classifier_llm=None,
     use_llm_classifier: bool = True,
+    use_jev_classifier: bool = False,
     injection_llm=None,
     use_llm_injection_detector: bool = True,
     pii_llm=None,
@@ -110,7 +111,12 @@ def ingest_directory(
                 continue
 
         docs_to_chunk.extend(
-            enrich_all(documents, llm=classifier_llm, use_llm=use_llm_classifier)
+            enrich_all(
+                documents,
+                llm=classifier_llm,
+                use_llm=use_llm_classifier,
+                use_jev=use_jev_classifier,
+            )
         )
         files_pending_mark.append(file_path)
 

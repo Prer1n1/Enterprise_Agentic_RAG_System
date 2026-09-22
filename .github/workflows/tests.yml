@@ -20,18 +20,20 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # These 11 scripts use fake embeddings / the keyword classifier
+      # These 12 scripts use fake embeddings / the keyword classifier
       # fallback (use_llm=False) instead of real OpenAI calls,
       # test_reranker.py exercises its own no-COHERE_API_KEY fallback plus
-      # a monkeypatched fake reranker, test_prompt_injection.py exercises
-      # its own keyword fallback (use_llm=False), test_access_control.py
-      # is pure logic/config-file tests with no external calls at all,
-      # test_pii_redaction.py exercises its offline parts with a fake
-      # structured-output LLM double, and test_guardrails.py exercises the
-      # hallucination guardrail's offline paths (no-context, a simulated
-      # scoring failure) with a fake metric double — see each file's own
-      # docstring. No API key needed, so they run unconditionally on every
-      # push and PR, including from forks.
+      # a monkeypatched fake reranker, test_jev_classifier.py exercises its
+      # own no-TYPESAFE_API_KEY fallback plus a monkeypatched fake Jev call
+      # (same shape as test_reranker.py), test_prompt_injection.py
+      # exercises its own keyword fallback (use_llm=False),
+      # test_access_control.py is pure logic/config-file tests with no
+      # external calls at all, test_pii_redaction.py exercises its offline
+      # parts with a fake structured-output LLM double, and
+      # test_guardrails.py exercises the hallucination guardrail's offline
+      # paths (no-context, a simulated scoring failure) with a fake metric
+      # double — see each file's own docstring. No API key needed, so they
+      # run unconditionally on every push and PR, including from forks.
       - name: Run offline test suite
         run: |
           python test_loaders.py
@@ -41,6 +43,7 @@ jobs:
           python test_pipeline.py
           python test_storage.py
           python test_reranker.py
+          python test_jev_classifier.py
           python test_prompt_injection.py
           python test_access_control.py
           python test_pii_redaction.py
