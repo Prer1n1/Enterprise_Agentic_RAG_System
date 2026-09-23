@@ -1,6 +1,10 @@
 """Pilot integration: Laya (github.com/NandhaKishorM/laya, PyPI `laya`) for
 document category classification at ingestion — replaces an earlier Jev
-(TypeSafe AI) pilot of the same shape.
+(TypeSafe AI) pilot of the same shape. Also exposes laya_rerank() (below),
+used ONLY by evaluation/ragas_eval.py to compare Laya's own relevance
+scoring against Cohere's reranker as a THIRD evaluation column — not
+wired into the live query path (retrieval/hybrid_retriever.py is
+untouched), since the user explicitly asked to compare, not swap.
 
 Why the swap: Jev's hosted API opened access on 2026-09-15 but was
 waitlisted, then hit onboarding capacity limits the day access opened —
@@ -81,6 +85,55 @@ def _get_agent():
             logger.exception("laya_load_failed")
             _load_failed = True
     return _agent
+
+
+_RERANK_LEVELS = ["not relevant", "somewhat relevant", "highly relevant"]
+_RERANK_MAX_LEVEL = len(_RERANK_LEVELS) - 1
+
+
+def laya_rerank(query: str, documents: List[str], top_n: int) -> Optional[List[Tuple[int, float]]]:
+    """Returns (index_into_documents, relevance_score) pairs, best-first,
+    truncated to top_n, matching retrieval/reranker.py's rerank() contract
+    exactly so it can be dropped into the same evaluation/comparison code.
+
+    Scores a query/document pair with a `score` typed question (an ordinal
+    scale, not Cohere's native continuous score) and normalizes Laya's own
+    `score` field — a probability-weighted expected value over the ordinal
+    levels, e.g. 0*P(not relevant) + 1*P(somewhat) + 2*P(highly), verified
+    directly against a real response rather than assumed — into a 0-1
+    range by dividing by the top level index, so it's on the same scale as
+    Cohere's relevance_score for side-by-side comparison.
+
+    THIS IS FOR THE EVALUATION HARNESS ONLY (see
+    evaluation/ragas_eval.py's Laya reranking-impact column) — not wired
+    into retrieval/hybrid_retriever.py's live query path. Returns None on
+    ANY failure (no documents, model unavailable, malformed output),
+    same fail-safe contract as the rest of this module. Never raises."""
+    if not documents:
+        return None
+    agent = _get_agent()
+    if agent is None:
+        return None
+    try:
+        questions = {
+            "relevance": {
+                "type": "score",
+                "instructions": f"How relevant is this document to answering the query: {query!r}?",
+                "criteria": _RERANK_LEVELS,
+            }
+        }
+        scored = []
+        for i, doc in enumerate(documents):
+            state = f"Query: {query}\n\nDocument: {doc}"
+            result = agent.predict(state, questions)
+            answer = result["answers"]["relevance"]
+            normalized = float(answer["score"]) / _RERANK_MAX_LEVEL
+            scored.append((i, normalized))
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return scored[:top_n]
+    except Exception:
+        logger.exception("laya_rerank_failed")
+        return None
 
 
 def laya_classify_category(

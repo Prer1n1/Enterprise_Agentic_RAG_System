@@ -18,7 +18,15 @@ Stage -> metric -> RAGAS class (or "custom" with the reason):
                                               Precision WITH vs WITHOUT
                                               Cohere reranking, same
                                               question/categories, isolating
-                                              reranking's own effect
+                                              reranking's own effect. A
+                                              THIRD column adds Laya's own
+                                              relevance-scoring reranker
+                                              (laya_classifier.laya_rerank)
+                                              as a comparison point ONLY —
+                                              evaluation-only, not wired
+                                              into the live retrieval path.
+                                              See docs/design-decisions.md
+                                              ("Can Laya replace Cohere?").
   Generation  -> Answer correctness       -> AnswerCorrectness
               -> Groundedness             -> Faithfulness (this doubles as
                                               hallucination detection — see
@@ -81,6 +89,7 @@ from agent.graph import build_agent_graph
 from config import EMBEDDING_MODEL
 from evaluation.eval_dataset import EVAL_CASES, EvalCase
 from hallucination_guardrail import HALLUCINATION_THRESHOLD
+from laya_classifier import laya_rerank
 from retrieval.hybrid_retriever import HybridRetriever
 
 _CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
@@ -103,6 +112,11 @@ class EvalRunResult:
     # see _reranking_impact()'s docstring.
     context_precision_with_rerank: float
     context_precision_without_rerank: float
+    # Laya's OWN reranking signal (laya_classifier.laya_rerank), applied to
+    # the same RRF-only candidate pool as context_precision_without_rerank —
+    # isolates Laya's reranking quality from Cohere's, both measured
+    # against the identical un-reranked baseline. See _laya_reranking_impact().
+    context_precision_with_laya_rerank: float
 
 
 def _routing_accuracy(actual_categories: List[str], expected_categories: List[str]) -> bool:
@@ -172,6 +186,41 @@ def _reranking_impact(
     )
 
 
+def _laya_reranking_impact(
+    retriever: HybridRetriever,
+    case: EvalCase,
+    categories: List[str],
+    precision_metric: LLMContextPrecisionWithReference,
+) -> float:
+    """Context Precision with Laya's OWN relevance-scoring reranker
+    (laya_classifier.laya_rerank) applied to the same RRF-only candidate
+    pool _reranking_impact() uses for its "without rerank" baseline —
+    same isolation principle: identical question/categories, only the
+    reranking step itself differs, so this and
+    context_precision_without_rerank are directly comparable, and both
+    are directly comparable to context_precision_with_rerank (Cohere).
+
+    A wider top_k=10 pool (vs. the final top 5) gives Laya's reranker
+    actual candidates to discriminate between — reranking a pool that's
+    already been trimmed to the final size would just reorder the same 5
+    items Cohere/RRF already settled on, not test reranking quality.
+    Falls back to plain RRF order if Laya is unavailable or fails, same
+    graceful-degradation contract as the rest of this pilot."""
+    all_chunks = []
+    for category in categories:
+        all_chunks.extend(
+            retriever.retrieve(case.question, top_k=10, category=category, use_reranker=False)
+        )
+    candidates = _dedupe_contexts(all_chunks)
+    if not candidates:
+        contexts = []
+    else:
+        reranked = laya_rerank(case.question, candidates, top_n=5)
+        contexts = [candidates[i] for i, _ in reranked] if reranked is not None else candidates[:5]
+    sample = SingleTurnSample(user_input=case.question, retrieved_contexts=contexts, reference=case.reference_answer)
+    return precision_metric.single_turn_score(sample)
+
+
 def run_evaluation(retriever: HybridRetriever) -> List[EvalRunResult]:
     graph = build_agent_graph(retriever)
     llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-4o-mini", temperature=0))
@@ -181,6 +230,7 @@ def run_evaluation(retriever: HybridRetriever) -> List[EvalRunResult]:
     agent_outputs = []
     samples = []
     rerank_scores = []
+    laya_rerank_scores = []
     for case in EVAL_CASES:
         result = graph.invoke({"query": case.question})
         contexts = _dedupe_contexts(result["retrieved_chunks"])
@@ -195,6 +245,9 @@ def run_evaluation(retriever: HybridRetriever) -> List[EvalRunResult]:
             )
         )
         rerank_scores.append(_reranking_impact(retriever, case, result["categories"], precision_metric))
+        laya_rerank_scores.append(
+            _laya_reranking_impact(retriever, case, result["categories"], precision_metric)
+        )
 
     dataset = EvaluationDataset(samples=samples)
     ragas_result = evaluate(
@@ -231,6 +284,7 @@ def run_evaluation(retriever: HybridRetriever) -> List[EvalRunResult]:
                 likely_hallucination=faithfulness_score < HALLUCINATION_THRESHOLD,
                 context_precision_with_rerank=with_rerank_score,
                 context_precision_without_rerank=without_rerank_score,
+                context_precision_with_laya_rerank=laya_rerank_scores[i],
             )
         )
     return results
@@ -244,12 +298,16 @@ def print_report(results: List[EvalRunResult]) -> None:
         print(f"{r.question[:53]:<55} {'OK' if r.routing_accuracy else 'MISROUTED'}")
 
     print("\n=== Retrieval + Reranking ===")
-    print(f"{'Question':<45} {'CtxPrec':>8} {'CtxRec':>7} {'Prec w/rerank':>14} {'Prec w/o rerank':>16}")
-    print("-" * 95)
+    print(
+        f"{'Question':<40} {'CtxPrec':>7} {'CtxRec':>6} {'Prec w/Cohere':>13} "
+        f"{'Prec w/Laya':>11} {'Prec w/o rerank':>15}"
+    )
+    print("-" * 100)
     for r in results:
         print(
-            f"{r.question[:43]:<45} {r.context_precision:>8.2f} {r.context_recall:>7.2f} "
-            f"{r.context_precision_with_rerank:>14.2f} {r.context_precision_without_rerank:>16.2f}"
+            f"{r.question[:38]:<40} {r.context_precision:>7.2f} {r.context_recall:>6.2f} "
+            f"{r.context_precision_with_rerank:>13.2f} {r.context_precision_with_laya_rerank:>11.2f} "
+            f"{r.context_precision_without_rerank:>15.2f}"
         )
 
     print("\n=== Generation ===")
@@ -270,7 +328,8 @@ def print_report(results: List[EvalRunResult]) -> None:
     print(f"Routing accuracy:              {routing_acc_pct:.0f}%")
     print(f"Context precision (w/ ref):    {sum(r.context_precision for r in results) / n:.2f}")
     print(f"Context recall:                {sum(r.context_recall for r in results) / n:.2f}")
-    print(f"Context precision w/ rerank:   {sum(r.context_precision_with_rerank for r in results) / n:.2f}")
+    print(f"Context precision w/ Cohere:   {sum(r.context_precision_with_rerank for r in results) / n:.2f}")
+    print(f"Context precision w/ Laya:     {sum(r.context_precision_with_laya_rerank for r in results) / n:.2f}")
     print(f"Context precision w/o rerank:  {sum(r.context_precision_without_rerank for r in results) / n:.2f}")
     print(f"Faithfulness (groundedness):   {sum(r.faithfulness for r in results) / n:.2f}")
     print(f"Answer relevancy:              {sum(r.answer_relevancy for r in results) / n:.2f}")

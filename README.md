@@ -124,7 +124,7 @@ Re-running `ingest` is incremental — unchanged files are skipped (content-hash
 
 ## Evaluation
 
-Scored **per pipeline stage** (router → retrieval → reranking → generation), not just the final answer — `python main.py evaluate` runs the curated eval set (`evaluation/eval_dataset.py`) against the live persisted corpus and reports real metrics at each stage, using RAGAS's own metric classes wherever one exists. Snapshot from 2026-09-21:
+Scored **per pipeline stage** (router → retrieval → reranking → generation), not just the final answer — `python main.py evaluate` runs the curated eval set (`evaluation/eval_dataset.py`) against the live persisted corpus and reports real metrics at each stage, using RAGAS's own metric classes wherever one exists. Snapshot from 2026-09-23:
 
 **Router**
 
@@ -140,16 +140,18 @@ Routing accuracy: **100%** (5/5) — intersection-based (a routing decision only
 
 **Retrieval + Reranking**
 
-| Question | Context Precision | Context Recall | Precision w/ rerank | Precision w/o rerank |
-|---|---|---|---|---|
-| How many paid leave days...? | 1.00 | 1.00 | 1.00 | 0.83 |
-| How often must passwords be rotated? | 0.00 | 0.00 | 0.00 | 0.00 |
-| How quickly must security incidents...? | 1.00 | 1.00 | 1.00 | 1.00 |
-| What is the expense approval threshold? | 1.00 | 1.00 | 1.00 | 0.50 |
-| How long does it take to get a laptop...? | 1.00 | 1.00 | 1.00 | 1.00 |
-| **Average** | **0.80** | **0.80** | **0.80** | **0.67** |
+| Question | Context Precision | Context Recall | Precision w/ Cohere | Precision w/ Laya | Precision w/o rerank |
+|---|---|---|---|---|---|
+| How many paid leave days...? | 1.00 | 1.00 | 1.00 | 1.00 | 0.83 |
+| How often must passwords be rotated? | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| How quickly must security incidents...? | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| What is the expense approval threshold? | 1.00 | 1.00 | 1.00 | 1.00 | 0.50 |
+| How long does it take to get a laptop...? | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| **Average** | **0.80** | **0.80** | **0.80** | **0.80** | **0.67** |
 
-Real finding, not a clean pass across the board: the password-rotation question scored **0.00** on both precision and recall. Routing was still marked "OK" (it picked `Security`, one of the two acceptable categories), but `Security` alone doesn't contain the actual fact — that lives in an `IT`-tagged CSV row the router didn't select on this run. This is exactly the kind of gap a single end-to-end score would have hidden: routing "passed," but retrieval still failed, because intersection-based routing accuracy and actual answer retrievability are different questions. Reranking's real, measurable effect shows up on the other two rows where it mattered: precision recovers from 0.83→1.00 and 0.50→1.00 with reranking on — but reranking can't fix a category the router never retrieved from in the first place (the password-rotation row stays 0.00 either way).
+Real finding, not a clean pass across the board: the password-rotation question scored **0.00** on both precision and recall, for *all three* reranking conditions. Routing was still marked "OK" (it picked `Security`, one of the two acceptable categories), but `Security` alone doesn't contain the actual fact — that lives in an `IT`-tagged CSV row the router didn't select on this run. Reranking, Cohere's or Laya's, can only reorder what retrieval actually fetched — neither can fix a category the router never retrieved from in the first place.
+
+**Laya matched Cohere exactly on this eval set** — same 0.80 average, same score on every individual row, both clearly ahead of the 0.67 no-reranking baseline (see the "Experimental" section below for how this was measured — an evaluation-only comparison, Laya is not wired into the live retrieval path). Worth being precise about what that does and doesn't prove: 5 questions is a small eval set, one of the 5 rows is a routing failure where nothing can differ, and Cohere is a purpose-built, widely-used reranking model with a long track record this project doesn't have any comparable history with Laya on. Identical scores on 5 questions is a genuinely interesting, real signal — not proof of equivalence at scale.
 
 **Generation**
 
@@ -166,7 +168,7 @@ The Citation Correctness check (a small structural check, not an LLM judgment �
 
 0 of 5 questions flagged as a likely hallucination (`HALLUCINATION_THRESHOLD = 0.7`). Re-run this yourself with `python main.py evaluate` — results will vary with corpus contents and model versions; these numbers are a real snapshot, not a fixed claim. See `docs/design-decisions.md` ("Evaluation — per-pipeline-stage scoring") for what each metric means, which ones are real RAGAS classes vs. small custom checks (and why), and which stages were deliberately left unscored (tone, output safety, "completeness") with reasoning.
 
-## Experimental: Laya classification pilot
+## Experimental: Laya pilots (classification + reranking comparison)
 
 Started as a pilot of [TypeSafe AI's Jev](https://typesafe.ai) ("System One"), a non-autoregressive model that answers typed Choice/Score/Noul questions against program state in a single pass instead of generating text. Jev's hosted API opened access on 2026-09-15 but hit onboarding capacity limits the day this project tried it, with no working key to verify against. [Laya](https://github.com/NandhaKishorM/laya) (PyPI `laya`) answers the exact same typed-question shape but as a real, open-weight (Apache 2.0), locally-run model — no API key, no waitlist. Verified as legitimate before adopting it (GitHub API metadata, a real PyPI release history, a real author/company), then actually installed and run, not just read about — see `docs/design-decisions.md` ("Jev → Laya: a pilot that changed backends mid-flight") for the full story, including a real dependency-conflict bug this swap surfaced and fixed.
 
@@ -187,6 +189,8 @@ Two real, honest findings, not cherry-picked:
 - Laya's own claimed ~33ms latency did **not** hold up on ordinary CPU hardware. Real steady-state per-call inference here was ~1044ms — on par with the existing OpenAI call, not the order-of-magnitude speedup the vendor's README advertises. Almost certainly a GPU-measured benchmark number; treat the marketing claim as unverified for a typical CPU deployment.
 
 Access to the model is not gated — first run downloads a real checkpoint (~1.6GB, one-time) from Hugging Face. The offline test suite (`test_laya_classifier.py`) proves the fallback chain via mocking, without paying that download cost on every CI run; a separate, real live test exists but is deliberately *not* wired into CI (opt-in via `RUN_LAYA_LIVE_TEST=1`) so pushes don't pay a multi-minute tax for a pilot integration.
+
+**Reranking comparison (evaluation-only, not live).** A second, separate use of Laya was tried after specifically asking whether it could stand in for Cohere's reranker (see the Evaluation section above): `laya_classifier.laya_rerank()` scores each candidate chunk's relevance to the query with a `score`-type question (an ordinal `not relevant`/`somewhat relevant`/`highly relevant` scale, converted to a 0-1 value), and `evaluation/ragas_eval.py` runs it as a **third column** alongside Cohere's real reranker and the no-reranking baseline — on the identical candidate pool, so the three are directly comparable. This is evaluation-only: `retrieval/hybrid_retriever.py` still only ever calls Cohere in the live query path, nothing was swapped. Real result: Laya matched Cohere's score exactly on every question in the eval set (0.80 average vs. 0.80, both ahead of 0.67 unreranked) — a genuinely interesting signal, though 5 questions is too small a set to call this proven equivalence. See `docs/design-decisions.md` ("Can Laya replace Cohere as a reranker?") for the full reasoning on why this stays a comparison, not a swap.
 
 ### Running it with Docker
 
