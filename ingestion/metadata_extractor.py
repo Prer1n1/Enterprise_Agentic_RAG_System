@@ -14,7 +14,7 @@ from langchain_openai import ChatOpenAI
 from langdetect import LangDetectException, detect
 from pydantic import BaseModel, Field
 
-from jev_classifier import jev_classify_category
+from laya_classifier import laya_classify_category
 from retry_utils import retry_openai_call
 
 from .schema import Document
@@ -42,13 +42,13 @@ _CATEGORY_KEYWORDS = {
 # with the categories documents actually get tagged with.
 CATEGORIES = list(_CATEGORY_KEYWORDS.keys()) + ["General"]
 
-# Jev's Choice primitive takes a short description per option, not a raw
+# Laya's Choice primitive takes a short description per option, not a raw
 # keyword set — reusing _CATEGORY_KEYWORDS (the same real definitions the
 # keyword fallback and the LLM prompt both draw from, so all three
 # classifiers stay in sync with one definition of what each category means)
 # rather than writing a fourth, separately-drifting description of "HR".
-_JEV_CRITERIA = {cat: f"about {', '.join(sorted(kws))}" for cat, kws in _CATEGORY_KEYWORDS.items()}
-_JEV_CRITERIA["General"] = "none of the other categories clearly apply"
+_LAYA_CRITERIA = {cat: f"about {', '.join(sorted(kws))}" for cat, kws in _CATEGORY_KEYWORDS.items()}
+_LAYA_CRITERIA["General"] = "none of the other categories clearly apply"
 
 _WORD_RE = re.compile(r"[a-zA-Z]{3,}")
 
@@ -134,14 +134,14 @@ def _llm_classify_category(text: str, llm=None) -> Optional[str]:
         return None
 
 
-def _jev_classify_category(text: str) -> Optional[str]:
-    """Wraps jev_classifier.jev_classify_category with this module's own
-    CATEGORIES/_JEV_CRITERIA — kept here rather than in jev_classifier.py
+def _laya_classify_category(text: str) -> Optional[str]:
+    """Wraps laya_classifier.laya_classify_category with this module's own
+    CATEGORIES/_LAYA_CRITERIA — kept here rather than in laya_classifier.py
     so that module stays generic (no dependency on this module's category
     taxonomy) and this file stays the one place CATEGORIES is defined.
     Returns None on any failure or low-confidence answer; see
-    jev_classifier.py's own docstring for the full fallback reasoning."""
-    result = jev_classify_category(text, CATEGORIES, _JEV_CRITERIA)
+    laya_classifier.py's own docstring for the full fallback reasoning."""
+    result = laya_classify_category(text, CATEGORIES, _LAYA_CRITERIA)
     return result[0] if result else None
 
 
@@ -150,7 +150,7 @@ def classify_category(
     hint: Optional[str] = None,
     llm=None,
     use_llm: bool = True,
-    use_jev: bool = False,
+    use_laya: bool = False,
 ) -> str:
     """hint: an explicit category from structured source data (e.g. a
     CSV's "department" column). Trusted outright when it's a known
@@ -159,7 +159,7 @@ def classify_category(
     department=IT about "password rotation" was misclassified as
     Security by keywords alone, since "password" is a Security keyword).
 
-    use_jev=True tries the Jev pilot FIRST (see jev_classifier.py) —
+    use_laya=True tries the Laya pilot FIRST (see laya_classifier.py) —
     opt-in, defaults False, never replaces the LLM tier below it, only
     ever runs ahead of it. use_llm=False forces the free/offline keyword
     path — used by tests that need to stay fast, deterministic, and cost
@@ -167,10 +167,10 @@ def classify_category(
     if hint and hint in CATEGORIES:
         return hint
 
-    if use_jev:
-        jev_result = _jev_classify_category(text)
-        if jev_result:
-            return jev_result
+    if use_laya:
+        laya_result = _laya_classify_category(text)
+        if laya_result:
+            return laya_result
 
     if use_llm:
         llm_result = _llm_classify_category(text, llm=llm)
@@ -180,7 +180,7 @@ def classify_category(
     return _keyword_classify_category(text)
 
 
-def enrich(document: Document, llm=None, use_llm: bool = True, use_jev: bool = False) -> Document:
+def enrich(document: Document, llm=None, use_llm: bool = True, use_laya: bool = False) -> Document:
     """Adds doc_id, word_count, language, and category into
     metadata.extra. Mutates and returns the same Document."""
     extra = document.metadata.extra
@@ -189,10 +189,10 @@ def enrich(document: Document, llm=None, use_llm: bool = True, use_jev: bool = F
     extra["word_count"] = word_count
     extra["language"] = detect_language(document.content, word_count)
     extra["category"] = classify_category(
-        document.content, hint=extra.get("category_hint"), llm=llm, use_llm=use_llm, use_jev=use_jev
+        document.content, hint=extra.get("category_hint"), llm=llm, use_llm=use_llm, use_laya=use_laya
     )
     return document
 
 
-def enrich_all(documents: List[Document], llm=None, use_llm: bool = True, use_jev: bool = False) -> List[Document]:
-    return [enrich(doc, llm=llm, use_llm=use_llm, use_jev=use_jev) for doc in documents]
+def enrich_all(documents: List[Document], llm=None, use_llm: bool = True, use_laya: bool = False) -> List[Document]:
+    return [enrich(doc, llm=llm, use_llm=use_llm, use_laya=use_laya) for doc in documents]

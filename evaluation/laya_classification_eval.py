@@ -1,11 +1,11 @@
-"""Before/after benchmark for the Jev classification pilot (see
-jev_classifier.py, ingestion/metadata_extractor.py's use_jev param).
+"""Before/after benchmark for the Laya classification pilot (see
+laya_classifier.py, ingestion/metadata_extractor.py's use_laya param).
 
 Deliberately separate from evaluation/ragas_eval.py: that harness scores
 the end-to-end RAG pipeline (routing/retrieval/reranking/generation) over
 QUERIES. This one scores a single, narrower decision — document category
 classification at INGESTION — over hand-labeled EXCERPTS, which is the
-only decision point this pilot actually touches (see jev_classifier.py's
+only decision point this pilot actually touches (see laya_classifier.py's
 docstring for why classification, not synthesis or routing, was chosen).
 
 Hand-curated on purpose, same reasoning as evaluation/eval_dataset.py: a
@@ -14,17 +14,19 @@ three classifiers' accuracy/latency without paying for a large labeled
 set that wouldn't add much signal at this scope.
 
 Three tiers compared, each in isolation (not the real fallback chain):
-  keyword  -> classify_category(use_llm=False, use_jev=False)
-  llm      -> classify_category(use_llm=True,  use_jev=False)   [existing baseline]
-  jev      -> classify_category(use_llm=False, use_jev=True)    [pilot, alone —
-              use_llm=False here so a Jev failure shows up as a miss instead
+  keyword  -> classify_category(use_llm=False, use_laya=False)
+  llm      -> classify_category(use_llm=True,  use_laya=False)  [existing baseline]
+  laya     -> classify_category(use_llm=False, use_laya=True)   [pilot, alone —
+              use_llm=False here so a Laya failure shows up as a miss instead
               of silently being rescued by the LLM tier, which would hide
               the pilot's own real accuracy]
 
-If TYPESAFE_API_KEY isn't set, the "jev" column is skipped entirely rather
-than reported as if Jev had been tested — printing use_jev=True with no
-key configured would just re-run the keyword fallback and silently produce
-fabricated "Jev" numbers that were never really Jev's answers.
+Note: this actually loads and runs the real local Laya model — no API key
+needed (unlike the earlier, abandoned Jev version of this benchmark), but
+the first run downloads the checkpoint (~1.6GB) and every run pays a real
+model-load cost (~20-25s measured). Not something to run on every CI push
+for the same reason test_laya_classifier.py's live test isn't CI-wired —
+see that file's docstring.
 """
 
 from __future__ import annotations
@@ -33,7 +35,13 @@ import time
 from dataclasses import dataclass
 from typing import List
 
-from config import TYPESAFE_API_KEY
+import config  # noqa: F401 — importing this loads .env (OPENAI_API_KEY) as a
+# side effect; without it the LLM tier below silently fails on every call
+# (openai.OpenAIError: Missing credentials) and classify_category() falls
+# through to the keyword classifier without raising — a real bug this
+# project hit while building this exact script, caught only by noticing
+# the LLM tier's latency was suspiciously ~0ms instead of a real network
+# round-trip. See docs/design-decisions.md.
 from ingestion.metadata_extractor import classify_category
 
 
@@ -81,13 +89,13 @@ CASES: List[ClassificationCase] = [
 ]
 
 
-def _run_tier(name: str, use_llm: bool, use_jev: bool) -> None:
+def _run_tier(name: str, use_llm: bool, use_laya: bool) -> None:
     correct = 0
     total_seconds = 0.0
     print(f"\n--- {name} ---")
     for case in CASES:
         start = time.perf_counter()
-        predicted = classify_category(case.excerpt, use_llm=use_llm, use_jev=use_jev)
+        predicted = classify_category(case.excerpt, use_llm=use_llm, use_laya=use_laya)
         elapsed = time.perf_counter() - start
         total_seconds += elapsed
         ok = predicted == case.expected_category
@@ -101,22 +109,13 @@ def _run_tier(name: str, use_llm: bool, use_jev: bool) -> None:
 
 
 def main() -> None:
-    print("=== Classification benchmark: keyword vs LLM vs Jev (pilot) ===")
-    print(f"{len(CASES)} hand-labeled excerpts, one per category.\n")
+    print("=== Classification benchmark: keyword vs LLM vs Laya (pilot) ===")
+    print(f"{len(CASES)} hand-labeled excerpts, one per category.")
+    print("Loading Laya (first run downloads the checkpoint; every run pays a real load cost)...")
 
-    _run_tier("keyword (existing fallback tier)", use_llm=False, use_jev=False)
-    _run_tier("LLM — gpt-4o-mini (existing primary tier)", use_llm=True, use_jev=False)
-
-    if TYPESAFE_API_KEY:
-        _run_tier("Jev (pilot, alone — no LLM fallback)", use_llm=False, use_jev=True)
-    else:
-        print(
-            "\n--- Jev (pilot) ---\n"
-            "  SKIPPED — no TYPESAFE_API_KEY configured. Running use_jev=True "
-            "without a key would just silently re-run the keyword fallback and "
-            "produce numbers that were never really Jev's answers, so this "
-            "benchmark refuses to report a 'Jev' row until a real key is set."
-        )
+    _run_tier("keyword (existing fallback tier)", use_llm=False, use_laya=False)
+    _run_tier("LLM — gpt-4o-mini (existing primary tier)", use_llm=True, use_laya=False)
+    _run_tier("Laya (pilot, alone — no LLM fallback)", use_llm=False, use_laya=True)
 
 
 if __name__ == "__main__":

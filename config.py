@@ -46,13 +46,3 @@ COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 # the one full-access admin key, exactly as Authentication originally
 # built it. Same degrade-to-baseline pattern as everywhere else.
 ACCESS_CONTROL_CONFIG_PATH = os.getenv("ACCESS_CONTROL_CONFIG_PATH")
-
-# TypeSafe AI's Jev — a non-autoregressive "System One" model that answers
-# typed Choice/Score/Noul questions instead of generating text (see
-# jev_classifier.py). Piloted ONLY for document category classification at
-# ingestion, opt-in via use_jev_classifier=True — never a default, never a
-# swap for the existing LLM classifier. Unset means the pilot path is
-# simply unavailable and classify_category() uses its existing LLM ->
-# keyword fallback chain, same degrade-to-baseline pattern as Cohere above.
-TYPESAFE_API_KEY = os.getenv("TYPESAFE_API_KEY")
-JEV_MODEL = os.getenv("JEV_MODEL", "jev-latest")
